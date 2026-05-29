@@ -264,7 +264,7 @@ The proxy uses `tsx watch` for instant reload on code changes. The dashboard use
 - [x] Token allowedProviders grouping (`*` / `group:<type>`)
 - [x] Cost estimation with per-model pricing config
 - [x] Docker image & docker-compose
-- [ ] Provider fallback / retry
+- [x] Provider fallback / retry
 - [ ] Usage quota per token
 - [ ] Admin authentication for dashboard
 

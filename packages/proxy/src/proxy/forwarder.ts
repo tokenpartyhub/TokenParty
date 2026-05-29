@@ -2,6 +2,8 @@ import type { Context } from "hono";
 import type { AppEnv } from "../types/env.js";
 import { streamSSE } from "hono/streaming";
 import type { Provider } from "../types/config.js";
+import { getModelId, getModelPricing } from "../types/config.js";
+import { getConfig } from "../config.js";
 import { nanoid } from "nanoid";
 import { writeLog, headersToRecord } from "../store/log-writer.js";
 import { recordRequest } from "../metrics/collector.js";
@@ -33,7 +35,7 @@ export async function forwardRequest(
   transformedBody?: unknown,
   entryProtocol?: EntryProtocol,
   pricing?: { inputPrice?: number; outputPrice?: number }
-) {
+): Promise<Response> {
   const requestId = nanoid();
   const startTime = Date.now();
 
@@ -249,6 +251,11 @@ export async function forwardRequest(
       pricing,
     });
 
+    if (response.status >= 500 && provider.fallback) {
+      const fallbackResult = tryFallback(c, provider, model, targetPath, body, entryProtocol, requestId);
+      if (fallbackResult) return fallbackResult;
+    }
+
     return c.json(responseBody, response.status as any);
   } catch (error: any) {
     const latencyMs = Date.now() - startTime;
@@ -271,8 +278,43 @@ export async function forwardRequest(
       apiKeyIndex,
       pricing,
     });
+
+    if (provider.fallback) {
+      const fallbackResult = tryFallback(c, provider, model, targetPath, body, entryProtocol, requestId);
+      if (fallbackResult) return fallbackResult;
+    }
+
     return c.json({ error: "Upstream request failed", detail: error.message }, 502);
   }
+}
+
+function tryFallback(
+  c: Context<AppEnv>,
+  provider: Provider,
+  model: string,
+  targetPath: string,
+  body: any,
+  entryProtocol?: EntryProtocol,
+  originalRequestId?: string,
+): Promise<Response> | null {
+  if (!provider.fallback) return null;
+  const config = getConfig();
+  const fallbackProvider = config.providers.find((p) => p.id === provider.fallback && p.enabled);
+  if (!fallbackProvider) return null;
+
+  const modelConfig = fallbackProvider.models.find((m) => getModelId(m) === model);
+  if (!modelConfig) return null;
+
+  const fallbackPricing = getModelPricing(modelConfig);
+
+  let fallbackPath = targetPath;
+  if (fallbackProvider.type !== provider.type) {
+    if (fallbackProvider.type === "anthropic") fallbackPath = "/v1/messages";
+    else fallbackPath = "/chat/completions";
+  }
+
+  console.log(`[tokenparty] Falling back from ${provider.id} to ${fallbackProvider.id} for model ${model}`);
+  return forwardRequest(c, fallbackProvider, fallbackPath, body, entryProtocol, fallbackPricing);
 }
 
 // --- Anthropic SSE chunk → OpenAI SSE chunk ---
