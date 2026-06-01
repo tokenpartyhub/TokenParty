@@ -1,10 +1,17 @@
 import { serve } from "@hono/node-server";
 import { loadConfig, watchConfig } from "./config.js";
-import { initDb } from "./store/db.js";
+import { initDb, getValidAdminToken, getAdminTokenInfo, createAdminToken } from "./store/db.js";
 import { createServer } from "./server.js";
 
 const config = loadConfig();
 initDb();
+
+{
+  let token = getValidAdminToken();
+  if (!token) { token = createAdminToken(); console.log(`[tokenparty] New admin token generated`); }
+  const info = getAdminTokenInfo()!;
+  console.log(`[tokenparty] Admin token: ${info.token} (expires: ${new Date(info.expires_at).toISOString().slice(0, 10)})`);
+}
 
 const app = createServer();
 

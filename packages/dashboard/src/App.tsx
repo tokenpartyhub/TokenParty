@@ -1,9 +1,11 @@
-import { Routes, Route, NavLink } from "react-router-dom";
+import { Routes, Route, NavLink, Navigate, useLocation } from "react-router-dom";
 import Overview from "./pages/Overview";
 import Requests from "./pages/Requests";
 import Providers from "./pages/Providers";
 import Keys from "./pages/Keys";
 import Settings from "./pages/Settings";
+import Login from "./pages/Login";
+import { getAdminToken, clearAdminToken } from "./lib/api";
 
 const navItems = [
   { to: "/", label: "Overview" },
@@ -13,7 +15,13 @@ const navItems = [
   { to: "/settings", label: "Settings" },
 ];
 
-export default function App() {
+function AuthGuard({ children }: { children: React.ReactNode }) {
+  const token = getAdminToken();
+  if (!token) return <Navigate to="/login" replace />;
+  return <>{children}</>;
+}
+
+function Layout() {
   return (
     <div className="flex h-screen">
       <nav className="w-56 bg-gray-900 text-white p-4 flex flex-col gap-1">
@@ -30,6 +38,14 @@ export default function App() {
             {item.label}
           </NavLink>
         ))}
+        <div className="mt-auto">
+          <button
+            onClick={() => { clearAdminToken(); window.location.href = "/login"; }}
+            className="w-full px-3 py-2 rounded text-sm text-gray-400 hover:bg-gray-800 hover:text-white text-left"
+          >
+            Logout
+          </button>
+        </div>
       </nav>
       <main className="flex-1 overflow-auto p-6">
         <Routes>
@@ -41,5 +57,19 @@ export default function App() {
         </Routes>
       </main>
     </div>
+  );
+}
+
+export default function App() {
+  const location = useLocation();
+
+  if (location.pathname === "/login") {
+    return <Routes><Route path="/login" element={<Login />} /></Routes>;
+  }
+
+  return (
+    <AuthGuard>
+      <Layout />
+    </AuthGuard>
   );
 }

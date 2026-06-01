@@ -4,7 +4,7 @@ import path from "node:path";
 import os from "node:os";
 import fs from "node:fs";
 import { loadConfig, watchConfig } from "./config.js";
-import { initDb } from "./store/db.js";
+import { initDb, getValidAdminToken, getAdminTokenInfo, createAdminToken } from "./store/db.js";
 import { createServer } from "./server.js";
 
 const args = process.argv.slice(2);
@@ -23,6 +23,7 @@ Options:
   --port <port>      Port to listen on (default: 3456)
   --host <host>      Host to bind (default: 0.0.0.0)
   --config <path>    Path to config.yaml (default: ~/.tokenparty/config.yaml)
+  --token            Show current admin token
   -h, --help         Show this help message
   -v, --version      Show version
 
@@ -48,6 +49,27 @@ const port = getArg("port") ? Number(getArg("port")) : config.server.port;
 const host = getArg("host") ?? config.server.host;
 
 initDb();
+
+if (args.includes("--token")) {
+  let token = getValidAdminToken();
+  if (!token) token = createAdminToken();
+  const info = getAdminTokenInfo()!;
+  console.log(`Admin token: ${info.token}`);
+  console.log(`Expires:     ${new Date(info.expires_at).toISOString().slice(0, 10)}`);
+  process.exit(0);
+}
+
+function ensureAdminToken() {
+  let token = getValidAdminToken();
+  if (!token) {
+    token = createAdminToken();
+    console.log(`[tokenparty] New admin token generated`);
+  }
+  const info = getAdminTokenInfo()!;
+  console.log(`[tokenparty] Admin token: ${info.token} (expires: ${new Date(info.expires_at).toISOString().slice(0, 10)})`);
+}
+
+ensureAdminToken();
 
 const app = createServer();
 

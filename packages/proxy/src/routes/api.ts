@@ -1,11 +1,28 @@
 import { Hono } from "hono";
 import { getConfig, updateConfig } from "../config.js";
-import { getDb } from "../store/db.js";
+import { getDb, validateAdminToken } from "../store/db.js";
 import { readLog } from "../store/log-writer.js";
 import { nanoid } from "nanoid";
 import { getModelId } from "../types/config.js";
 
 export const apiRoutes = new Hono();
+
+// --- Auth ---
+
+apiRoutes.post("/auth/verify", async (c) => {
+  const { token } = await c.req.json<{ token: string }>();
+  return c.json({ valid: validateAdminToken(token) });
+});
+
+apiRoutes.use("/*", async (c, next) => {
+  if (c.req.path === "/api/auth/verify") return next();
+  const auth = c.req.header("authorization");
+  const token = auth?.startsWith("Bearer ") ? auth.slice(7) : undefined;
+  if (!token || !validateAdminToken(token)) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+  return next();
+});
 
 // --- Models ---
 

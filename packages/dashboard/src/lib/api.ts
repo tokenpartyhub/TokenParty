@@ -1,10 +1,29 @@
 const BASE = "/api";
+const TOKEN_KEY = "tokenparty_admin_token";
+
+export function getAdminToken(): string | null {
+  return localStorage.getItem(TOKEN_KEY);
+}
+
+export function setAdminToken(token: string) {
+  localStorage.setItem(TOKEN_KEY, token);
+}
+
+export function clearAdminToken() {
+  localStorage.removeItem(TOKEN_KEY);
+}
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    headers: { "Content-Type": "application/json" },
-    ...options,
-  });
+  const token = getAdminToken();
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+
+  const res = await fetch(`${BASE}${path}`, { headers, ...options });
+  if (res.status === 401) {
+    clearAdminToken();
+    window.location.href = "/login";
+    throw new Error("Unauthorized");
+  }
   if (!res.ok) throw new Error(`API error: ${res.status}`);
   return res.json();
 }
@@ -37,4 +56,11 @@ export const api = {
   },
 
   getRequestDetail: (id: string) => request<any>(`/requests/${id}`),
+
+  verifyToken: (token: string) =>
+    fetch(`${BASE}/auth/verify`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token }),
+    }).then((r) => r.json() as Promise<{ valid: boolean }>),
 };

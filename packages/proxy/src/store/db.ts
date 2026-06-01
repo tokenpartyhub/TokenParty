@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import path from "node:path";
 import { getConfig } from "../config.js";
+import { nanoid } from "nanoid";
 
 let db: Database.Database;
 
@@ -57,6 +58,12 @@ function runMigrations(db: Database.Database) {
     CREATE INDEX IF NOT EXISTS idx_request_timestamp ON request_index(timestamp);
     CREATE INDEX IF NOT EXISTS idx_request_token ON request_index(token_id);
     CREATE INDEX IF NOT EXISTS idx_request_provider ON request_index(provider_id);
+
+    CREATE TABLE IF NOT EXISTS admin_token (
+      token TEXT PRIMARY KEY,
+      created_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL
+    );
   `);
 
   const columns = db.prepare(`PRAGMA table_info(request_index)`).all() as { name: string }[];
@@ -97,4 +104,29 @@ function runMigrations(db: Database.Database) {
   if (!dailyColNames.has("currency")) {
     db.exec(`ALTER TABLE usage_daily ADD COLUMN currency TEXT DEFAULT 'USD'`);
   }
+}
+
+const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+
+export function getValidAdminToken(): string | null {
+  const row = db.prepare(`SELECT token FROM admin_token WHERE expires_at > ?`).get(Date.now()) as { token: string } | undefined;
+  return row?.token ?? null;
+}
+
+export function getAdminTokenInfo(): { token: string; expires_at: number } | null {
+  const row = db.prepare(`SELECT token, expires_at FROM admin_token WHERE expires_at > ?`).get(Date.now()) as { token: string; expires_at: number } | undefined;
+  return row ?? null;
+}
+
+export function createAdminToken(): string {
+  db.exec(`DELETE FROM admin_token`);
+  const token = `admin-${nanoid()}`;
+  const now = Date.now();
+  db.prepare(`INSERT INTO admin_token (token, created_at, expires_at) VALUES (?, ?, ?)`).run(token, now, now + THIRTY_DAYS_MS);
+  return token;
+}
+
+export function validateAdminToken(token: string): boolean {
+  const row = db.prepare(`SELECT 1 FROM admin_token WHERE token = ? AND expires_at > ?`).get(token, Date.now());
+  return !!row;
 }
