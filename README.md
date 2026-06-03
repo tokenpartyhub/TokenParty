@@ -284,7 +284,15 @@ The proxy uses `tsx watch` for instant reload on code changes. The dashboard use
 - [x] Docker image & docker-compose
 - [x] Provider fallback / retry
 - [x] Usage quota per token
-- [ ] Admin authentication for dashboard
+- [x] Admin authentication for dashboard
+- [x] SSE streaming passthrough (raw bytes, no re-encoding)
+- [x] Overview with multi-chart layout (Tokens / Cost / Requests)
+- [x] Request filtering (User / Provider / Model / Status / Tags)
+- [x] Custom tags via `x-tkparty-tags` header
+- [x] Log storage cleanup with configurable size limit
+- [x] Version update check in Settings
+- [ ] Session tracking
+- [ ] Rate limiting enforcement
 
 ## License
 
