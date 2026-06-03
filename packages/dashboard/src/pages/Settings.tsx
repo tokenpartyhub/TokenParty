@@ -150,19 +150,16 @@ export default function Settings() {
           <button
             disabled={cleaning}
             onClick={() => {
+              if (!confirm("This will permanently delete ALL request logs and usage statistics. Continue?")) return;
               setCleaning(true);
-              api.triggerLogCleanup().then((res) => {
+              api.clearAllLogs().then((res) => {
                 setLogStorage({ totalSizeMB: res.totalSizeMB, maxSizeMB: res.maxSizeMB, dayCount: res.dayCount });
-                if (res.cleaned.deletedDays.length > 0) {
-                  alert(`Cleaned up ${res.cleaned.deletedDays.length} day(s), freed ${res.cleaned.freedMB} MB`);
-                } else {
-                  alert("No cleanup needed — storage is within limits.");
-                }
+                alert(`All logs cleared, freed ${res.cleared.freedMB} MB`);
               }).catch(console.error).finally(() => setCleaning(false));
             }}
-            className="px-4 py-2 bg-gray-100 text-gray-700 rounded text-sm hover:bg-gray-200 border"
+            className="px-4 py-2 bg-red-50 text-red-600 rounded text-sm hover:bg-red-100 border border-red-200"
           >
-            {cleaning ? "Cleaning..." : "Run Cleanup Now"}
+            {cleaning ? "Clearing..." : "Clear All Logs"}
           </button>
         </div>
       </div>

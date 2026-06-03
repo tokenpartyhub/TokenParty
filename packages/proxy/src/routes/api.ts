@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { getConfig, updateConfig } from "../config.js";
 import { getDb, validateAdminToken, getSetting, setSetting } from "../store/db.js";
-import { readLog, getLogStats, cleanupLogs } from "../store/log-writer.js";
+import { readLog, getLogStats, cleanupLogs, clearAllLogs } from "../store/log-writer.js";
 import { nanoid } from "nanoid";
 import { getModelId } from "../types/config.js";
 import { readFileSync } from "node:fs";
@@ -224,6 +224,12 @@ apiRoutes.post("/settings/log-cleanup", (c) => {
   const result = cleanupLogs();
   const stats = getLogStats();
   return c.json({ ...stats, cleaned: result });
+});
+
+apiRoutes.delete("/settings/log-storage", (c) => {
+  const result = clearAllLogs();
+  const stats = getLogStats();
+  return c.json({ ...stats, cleared: result });
 });
 
 function maskKey(key: string): string {

@@ -73,6 +73,10 @@ export const api = {
     request<{ totalSizeMB: number; maxSizeMB: number; dayCount: number; cleaned: { deletedDays: string[]; freedMB: number } }>(
       "/settings/log-cleanup", { method: "POST" }
     ),
+  clearAllLogs: () =>
+    request<{ totalSizeMB: number; maxSizeMB: number; dayCount: number; cleared: { freedMB: number } }>(
+      "/settings/log-storage", { method: "DELETE" }
+    ),
 
   verifyToken: (token: string) =>
     fetch(`${BASE}/auth/verify`, {

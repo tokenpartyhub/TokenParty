@@ -104,3 +104,26 @@ export function cleanupLogs(): { deletedDays: string[]; freedMB: number } {
 
   return { deletedDays, freedMB: Math.round(freedBytes / 1024 / 1024 * 100) / 100 };
 }
+
+export function clearAllLogs(): { freedMB: number } {
+  const config = getConfig();
+  const logDir = config.server.logDir;
+
+  let totalSize = 0;
+  if (fs.existsSync(logDir)) {
+    for (const entry of fs.readdirSync(logDir)) {
+      const dayPath = path.join(logDir, entry);
+      if (!fs.statSync(dayPath).isDirectory()) continue;
+      for (const file of fs.readdirSync(dayPath)) {
+        totalSize += fs.statSync(path.join(dayPath, file)).size;
+      }
+      fs.rmSync(dayPath, { recursive: true, force: true });
+    }
+  }
+
+  const db = getDb();
+  db.exec(`DELETE FROM request_index`);
+  db.exec(`DELETE FROM usage_daily`);
+
+  return { freedMB: Math.round(totalSize / 1024 / 1024 * 100) / 100 };
+}
