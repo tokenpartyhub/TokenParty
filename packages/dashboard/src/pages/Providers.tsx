@@ -357,7 +357,7 @@ export default function Providers() {
                     );
                   })}
                   <button onClick={addModel} type="button" className="text-sm text-indigo-600 hover:underline">+ Add model</button>
-                  <div className="text-xs text-gray-400">Prices per 1M tokens (optional)</div>
+                  <div className="text-xs text-gray-400">Prices per 1M tokens (optional). Unconfigured prices are treated as free and routed with highest priority.</div>
                 </div>
               </div>
               <label className="flex items-center gap-2 text-sm">

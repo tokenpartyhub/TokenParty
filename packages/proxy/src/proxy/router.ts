@@ -26,13 +26,22 @@ export function resolveProvider(model: string, token: Token): RouteResult & { pr
     return { error: `No provider available for model: ${model}` };
   }
 
-  const match = candidateProviders.find((p) => isProviderAllowed(p, token.allowedProviders));
-  if (match) {
-    const modelConfig = match.models.find((m) => getModelId(m) === model);
-    return { provider: match, pricing: modelConfig ? getModelPricing(modelConfig) : undefined };
+  const allowed = candidateProviders.filter((p) => isProviderAllowed(p, token.allowedProviders));
+  if (allowed.length === 0) {
+    return { error: `Token not authorized for any provider serving model: ${model}` };
   }
 
-  return { error: `Token not authorized for any provider serving model: ${model}` };
+  allowed.sort((a, b) => {
+    const pa = getModelPricing(a.models.find((m) => getModelId(m) === model)!);
+    const pb = getModelPricing(b.models.find((m) => getModelId(m) === model)!);
+    const costA = pa ? (pa.inputPrice ?? 0) + (pa.outputPrice ?? 0) : 0;
+    const costB = pb ? (pb.inputPrice ?? 0) + (pb.outputPrice ?? 0) : 0;
+    return costA - costB;
+  });
+
+  const match = allowed[0];
+  const modelConfig = match.models.find((m) => getModelId(m) === model);
+  return { provider: match, pricing: modelConfig ? getModelPricing(modelConfig) : undefined };
 }
 
 export function listAvailableModels(token: Token): string[] {
