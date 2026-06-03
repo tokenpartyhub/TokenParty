@@ -34,6 +34,19 @@ apiRoutes.use("/*", async (c, next) => {
 
 apiRoutes.get("/version", (c) => c.json({ version: pkg.version }));
 
+apiRoutes.get("/version/check", async (c) => {
+  try {
+    const res = await fetch("https://registry.npmjs.org/@zhouzhengchang/token-party/latest");
+    if (!res.ok) return c.json({ current: pkg.version, latest: null, hasUpdate: false });
+    const data = await res.json() as { version: string };
+    const latest = data.version;
+    const hasUpdate = latest !== pkg.version;
+    return c.json({ current: pkg.version, latest, hasUpdate });
+  } catch {
+    return c.json({ current: pkg.version, latest: null, hasUpdate: false });
+  }
+});
+
 // --- Models ---
 
 apiRoutes.get("/models", (c) => {

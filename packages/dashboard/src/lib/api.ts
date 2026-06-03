@@ -63,6 +63,7 @@ export const api = {
   getRequestDetail: (id: string) => request<any>(`/requests/${id}`),
 
   getVersion: () => request<{ version: string }>("/version").then((r) => r.version),
+  checkUpdate: () => request<{ current: string; latest: string | null; hasUpdate: boolean }>("/version/check"),
 
   getLogStorage: () => request<{ totalSizeMB: number; maxSizeMB: number; dayCount: number }>("/settings/log-storage"),
   updateLogStorage: (maxSizeMB: number) =>

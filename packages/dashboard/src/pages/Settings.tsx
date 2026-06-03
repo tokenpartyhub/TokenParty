@@ -43,6 +43,9 @@ export default function Settings() {
   const [settings, setSettings] = useState<SettingsData>(loadSettings);
   const [saved, setSaved] = useState(false);
   const [version, setVersion] = useState("");
+  const [latestVersion, setLatestVersion] = useState<string | null>(null);
+  const [hasUpdate, setHasUpdate] = useState(false);
+  const [checking, setChecking] = useState(false);
   const [logStorage, setLogStorage] = useState<LogStorageInfo | null>(null);
   const [maxSizeInput, setMaxSizeInput] = useState("");
   const [cleaning, setCleaning] = useState(false);
@@ -165,8 +168,39 @@ export default function Settings() {
       </div>
 
       {version && (
-        <div className="mt-6 text-sm text-gray-400">
-          TokenParty v{version}
+        <div className="bg-white rounded-lg shadow p-6 max-w-lg mt-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <span className="text-sm text-gray-600">TokenParty <span className="font-medium text-gray-900">v{version}</span></span>
+              {hasUpdate && latestVersion && (
+                <span className="ml-2 px-2 py-0.5 rounded text-xs bg-blue-100 text-blue-700">v{latestVersion} available</span>
+              )}
+              {checking && <span className="ml-2 text-xs text-gray-400">Checking...</span>}
+              {!hasUpdate && latestVersion && !checking && (
+                <span className="ml-2 text-xs text-green-600">Up to date</span>
+              )}
+            </div>
+            <button
+              disabled={checking}
+              onClick={() => {
+                setChecking(true);
+                api.checkUpdate().then((res) => {
+                  setLatestVersion(res.latest);
+                  setHasUpdate(res.hasUpdate);
+                }).catch(console.error).finally(() => setChecking(false));
+              }}
+              className="px-3 py-1.5 text-xs border rounded hover:bg-gray-50"
+            >
+              Check for Updates
+            </button>
+          </div>
+          {hasUpdate && latestVersion && (
+            <div className="mt-3 p-3 bg-blue-50 rounded text-xs text-gray-700 space-y-1">
+              <p className="font-medium">Update to v{latestVersion}:</p>
+              <code className="block bg-white px-2 py-1 rounded border text-xs font-mono">npm update -g @zhouzhengchang/token-party</code>
+              <p className="text-gray-500">Restart the service after updating.</p>
+            </div>
+          )}
         </div>
       )}
     </div>
