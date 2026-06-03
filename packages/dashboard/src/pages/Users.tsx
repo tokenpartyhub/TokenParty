@@ -7,7 +7,6 @@ interface TokenKey {
   name: string;
   allowedProviders: string[];
   rateLimit: number | null;
-  quota?: { daily?: number; monthly?: number };
   monthlyBudget?: number;
   enabled: boolean;
 }
@@ -167,26 +166,6 @@ export default function Users() {
                   onChange={(e) => setEditing({ ...editing, rateLimit: e.target.value ? Number(e.target.value) : null })}
                   className="w-full border rounded px-3 py-2 text-sm"
                 />
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-sm text-gray-600 mb-1">Daily Quota (tokens, empty = unlimited)</label>
-                  <input
-                    type="number"
-                    value={editing.quota?.daily ?? ""}
-                    onChange={(e) => setEditing({ ...editing, quota: { ...editing.quota, daily: e.target.value ? Number(e.target.value) : undefined } })}
-                    className="w-full border rounded px-3 py-2 text-sm"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm text-gray-600 mb-1">Monthly Quota (tokens, empty = unlimited)</label>
-                  <input
-                    type="number"
-                    value={editing.quota?.monthly ?? ""}
-                    onChange={(e) => setEditing({ ...editing, quota: { ...editing.quota, monthly: e.target.value ? Number(e.target.value) : undefined } })}
-                    className="w-full border rounded px-3 py-2 text-sm"
-                  />
-                </div>
               </div>
               <label className="flex items-center gap-2 text-sm">
                 <input

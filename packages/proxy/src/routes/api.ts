@@ -153,7 +153,6 @@ apiRoutes.post("/keys", async (c) => {
     rateLimit: body.rateLimit ?? null,
     enabled: body.enabled ?? true,
   };
-  if (body.quota) newToken.quota = body.quota;
   if (body.monthlyBudget !== undefined) newToken.monthlyBudget = body.monthlyBudget;
   updateConfig((raw) => {
     (raw.tokens as any[]).push(newToken);

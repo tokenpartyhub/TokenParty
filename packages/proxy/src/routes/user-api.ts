@@ -63,7 +63,6 @@ userApiRoutes.get("/profile", (c) => {
     monthlyCacheReadTokens: monthly.cache_read_tokens,
     dailySpent: daily.cost,
     dailyRequests: daily.requests,
-    quota: token.quota ?? null,
   });
 });
 

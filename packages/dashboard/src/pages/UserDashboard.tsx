@@ -13,7 +13,6 @@ interface Profile {
   monthlyCacheReadTokens: number;
   dailySpent: number;
   dailyRequests: number;
-  quota: { daily?: number; monthly?: number } | null;
 }
 
 export default function UserDashboard() {

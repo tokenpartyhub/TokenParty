@@ -29,10 +29,6 @@ export const TokenSchema = z.object({
   name: z.string(),
   allowedProviders: z.array(z.string()),
   rateLimit: z.number().nullable().optional(),
-  quota: z.object({
-    daily: z.number().optional(),
-    monthly: z.number().optional(),
-  }).optional(),
   monthlyBudget: z.number().optional(),
   enabled: z.boolean().default(true),
 });
