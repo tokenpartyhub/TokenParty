@@ -1,6 +1,6 @@
 {
   "name": "@zhouzhengchang/token-party",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "description": "AI API reverse proxy gateway with token management, protocol conversion, and built-in dashboard",
   "type": "module",
   "bin": {
