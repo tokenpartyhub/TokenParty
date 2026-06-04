@@ -181,28 +181,31 @@ export default function Requests({ mode = "admin" }: { mode?: "admin" | "user" }
       {/* Detail Panel - overlay */}
       {selected && (
         <div ref={detailRef} className="fixed inset-y-0 right-0 w-3/4 bg-white shadow-xl flex flex-col overflow-hidden z-20">
-          {/* Header: title + meta + tabs in compact layout */}
-          <div className="px-4 py-2 border-b bg-gray-50 shrink-0">
-            <div className="flex items-center justify-between mb-1.5">
-              <div className="flex items-center gap-3 min-w-0 text-xs">
-                <span className="font-bold text-sm shrink-0">Detail</span>
-                <span className="text-gray-400 font-mono truncate">{selected.id}</span>
+          {/* Header */}
+          <div className="px-5 py-3 border-b bg-gray-50 shrink-0 space-y-2">
+            {/* Title row */}
+            <div className="flex items-center justify-between">
+              <div className="flex items-baseline gap-3 min-w-0">
+                <h3 className="font-bold text-base shrink-0">Detail</h3>
+                <span className="text-xs text-gray-400 font-mono truncate">{selected.id}</span>
               </div>
-              <button onClick={() => setSelected(null)} className="text-gray-400 hover:text-gray-600 text-lg leading-none ml-2 shrink-0">&times;</button>
+              <button onClick={() => setSelected(null)} className="text-gray-400 hover:text-gray-600 ml-3 shrink-0">
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+              </button>
             </div>
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-0.5 text-xs">
-              <span><span className="text-gray-400">Model</span> {selected.model}</span>
-              <span><span className="text-gray-400">Provider</span> {selected.provider_id}</span>
-              <span><span className="text-gray-400">Latency</span> {selected.latency_ms}ms</span>
-              <span><span className="text-gray-400">Status</span> <span className={selected.status === 200 ? "text-green-600" : "text-red-600"}>{selected.status}</span></span>
-              <span><span className="text-gray-400">Entry</span> {reqLog?.headers?.["x-entry-protocol"] ?? "-"}</span>
-              <span><span className="text-gray-400">Cost</span> {selected.cost > 0 ? formatCost(selected.cost) : "-"}</span>
-              {resLog?.streaming && <span className="px-1.5 py-0.5 rounded bg-purple-100 text-purple-700">SSE</span>}
+            {/* Meta chips */}
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-white border border-gray-200"><span className="text-gray-400">Model</span> <span className="font-medium">{selected.model}</span></span>
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-white border border-gray-200"><span className="text-gray-400">Provider</span> {selected.provider_id}</span>
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-white border border-gray-200"><span className="text-gray-400">Latency</span> {selected.latency_ms}ms</span>
+              <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full border ${selected.status === 200 ? "bg-green-50 border-green-200 text-green-700" : "bg-red-50 border-red-200 text-red-700"}`}><span className="text-gray-400">Status</span> {selected.status}</span>
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-white border border-gray-200"><span className="text-gray-400">Entry</span> {reqLog?.headers?.["x-entry-protocol"] ?? "-"}</span>
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-white border border-gray-200"><span className="text-gray-400">Cost</span> {selected.cost > 0 ? formatCost(selected.cost) : "-"}</span>
+              {resLog?.streaming && <span className="px-2 py-0.5 rounded-full bg-purple-50 border border-purple-200 text-purple-700">SSE</span>}
             </div>
+            {/* Token bar */}
             {(selected.input_tokens > 0 || selected.output_tokens > 0) && (
-              <div className="mt-1.5">
-                <TokenUsageBar input={selected.input_tokens} output={selected.output_tokens} cacheRead={selected.cache_read_tokens ?? 0} cacheWrite={selected.cache_write_tokens ?? 0} />
-              </div>
+              <TokenUsageBar input={selected.input_tokens} output={selected.output_tokens} cacheRead={selected.cache_read_tokens ?? 0} cacheWrite={selected.cache_write_tokens ?? 0} />
             )}
           </div>
 
