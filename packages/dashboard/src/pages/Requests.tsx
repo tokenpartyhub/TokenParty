@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../lib/api";
 import { formatCost } from "./Settings";
 
@@ -18,6 +18,18 @@ export default function Requests({ mode = "admin" }: { mode?: "admin" | "user" }
   const [offset, setOffset] = useState(0);
   const [selected, setSelected] = useState<any>(null);
   const [activeTab, setActiveTab] = useState<"request" | "response">("request");
+  const detailRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!selected) return;
+    const handler = (e: MouseEvent) => {
+      if (detailRef.current && !detailRef.current.contains(e.target as Node)) {
+        setSelected(null);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [selected]);
   const [keyNames, setKeyNames] = useState<Record<string, string>>({});
   const [keys, setKeys] = useState<{ key: string; name: string }[]>([]);
   const [providers, setProviders] = useState<{ id: string; name: string }[]>([]);
@@ -73,15 +85,16 @@ export default function Requests({ mode = "admin" }: { mode?: "admin" | "user" }
     const detail = mode === "admin" ? await api.getRequestDetail(id) : await api.getUserRequestDetail(id);
     setSelected(detail);
     setActiveTab("request");
+    window.dispatchEvent(new CustomEvent("collapse-nav"));
   };
 
   const reqLog = selected?.logs?.find((l: any) => l.type === "request");
   const resLog = selected?.logs?.find((l: any) => l.type === "response");
 
   return (
-    <div className="flex gap-4 h-full">
+    <div className="h-full relative">
       {/* List */}
-      <div className="flex-1 min-w-0">
+      <div>
         <h2 className="text-2xl font-bold mb-4">Requests</h2>
         <div className="flex flex-wrap gap-2 mb-4 items-end">
           {mode === "admin" && (
@@ -163,53 +176,47 @@ export default function Requests({ mode = "admin" }: { mode?: "admin" | "user" }
         </div>
       </div>
 
-      {/* Detail Panel */}
+      {/* Detail Panel - overlay */}
       {selected && (
-        <div className="w-[600px] bg-white rounded-lg shadow flex flex-col overflow-hidden">
-          {/* Header */}
-          <div className="flex items-center justify-between px-4 py-3 border-b">
-            <div>
-              <h3 className="font-bold text-sm">Request Detail</h3>
-              <div className="text-xs text-gray-400 font-mono mt-0.5">{selected.id}</div>
+        <div ref={detailRef} className="fixed inset-y-0 right-0 w-3/4 bg-white shadow-xl flex flex-col overflow-hidden z-20">
+          {/* Header: title + meta + tabs in compact layout */}
+          <div className="px-4 py-2 border-b bg-gray-50 shrink-0">
+            <div className="flex items-center justify-between mb-1.5">
+              <div className="flex items-center gap-3 min-w-0 text-xs">
+                <span className="font-bold text-sm shrink-0">Detail</span>
+                <span className="text-gray-400 font-mono truncate">{selected.id}</span>
+              </div>
+              <button onClick={() => setSelected(null)} className="text-gray-400 hover:text-gray-600 text-lg leading-none ml-2 shrink-0">&times;</button>
             </div>
-            <button onClick={() => setSelected(null)} className="text-gray-400 hover:text-gray-600 text-lg leading-none">&times;</button>
-          </div>
-
-          {/* Meta + Token Usage Bar */}
-          <div className="px-4 py-3 border-b bg-gray-50">
-            <div className="grid grid-cols-3 gap-2 text-xs mb-3">
-              <div><span className="text-gray-500">Model:</span> {selected.model}</div>
-              <div><span className="text-gray-500">Provider:</span> {selected.provider_id}</div>
-              <div><span className="text-gray-500">Latency:</span> {selected.latency_ms}ms</div>
-              <div><span className="text-gray-500">Status:</span> <span className={selected.status === 200 ? "text-green-600" : "text-red-600"}>{selected.status}</span></div>
-              <div><span className="text-gray-500">Entry:</span> {reqLog?.headers?.["x-entry-protocol"] ?? "-"}</div>
-              <div><span className="text-gray-500">Cost:</span> {selected.cost > 0 ? formatCost(selected.cost) : "-"}</div>
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-0.5 text-xs">
+              <span><span className="text-gray-400">Model</span> {selected.model}</span>
+              <span><span className="text-gray-400">Provider</span> {selected.provider_id}</span>
+              <span><span className="text-gray-400">Latency</span> {selected.latency_ms}ms</span>
+              <span><span className="text-gray-400">Status</span> <span className={selected.status === 200 ? "text-green-600" : "text-red-600"}>{selected.status}</span></span>
+              <span><span className="text-gray-400">Entry</span> {reqLog?.headers?.["x-entry-protocol"] ?? "-"}</span>
+              <span><span className="text-gray-400">Cost</span> {selected.cost > 0 ? formatCost(selected.cost) : "-"}</span>
+              {resLog?.streaming && <span className="px-1.5 py-0.5 rounded bg-purple-100 text-purple-700">SSE</span>}
             </div>
             {(selected.input_tokens > 0 || selected.output_tokens > 0) && (
-              <TokenUsageBar input={selected.input_tokens} output={selected.output_tokens} cacheRead={selected.cache_read_tokens ?? 0} cacheWrite={selected.cache_write_tokens ?? 0} />
-            )}
-            {resLog?.streaming && (
-              <div className="mt-2">
-                <span className="px-2 py-0.5 rounded text-xs bg-purple-100 text-purple-700">Streaming (SSE)</span>
+              <div className="mt-1.5">
+                <TokenUsageBar input={selected.input_tokens} output={selected.output_tokens} cacheRead={selected.cache_read_tokens ?? 0} cacheWrite={selected.cache_write_tokens ?? 0} />
               </div>
             )}
           </div>
 
           {/* Error banner */}
           {resLog?.error && (
-            <div className="px-4 py-2 bg-red-50 text-red-700 text-xs border-b">
-              Error: {resLog.error}
-            </div>
+            <div className="px-4 py-1 bg-red-50 text-red-700 text-xs border-b shrink-0">Error: {resLog.error}</div>
           )}
 
           {/* Tabs */}
-          <div className="flex border-b">
-            <button onClick={() => setActiveTab("request")} className={`flex-1 px-4 py-2 text-sm font-medium ${activeTab === "request" ? "border-b-2 border-indigo-600 text-indigo-600" : "text-gray-500"}`}>Request</button>
-            <button onClick={() => setActiveTab("response")} className={`flex-1 px-4 py-2 text-sm font-medium ${activeTab === "response" ? "border-b-2 border-indigo-600 text-indigo-600" : "text-gray-500"}`}>Response</button>
+          <div className="flex border-b shrink-0">
+            <button onClick={() => setActiveTab("request")} className={`flex-1 px-4 py-1.5 text-xs font-medium ${activeTab === "request" ? "border-b-2 border-indigo-600 text-indigo-600" : "text-gray-500"}`}>Request</button>
+            <button onClick={() => setActiveTab("response")} className={`flex-1 px-4 py-1.5 text-xs font-medium ${activeTab === "response" ? "border-b-2 border-indigo-600 text-indigo-600" : "text-gray-500"}`}>Response</button>
           </div>
 
           {/* Content */}
-          <div className="flex-1 overflow-auto p-4 space-y-3 text-xs">
+          <div className="flex-1 overflow-auto px-4 py-2 space-y-2 text-xs">
             {activeTab === "request" && reqLog && (
               <>
                 <Section title="Headers">
@@ -233,7 +240,7 @@ export default function Requests({ mode = "admin" }: { mode?: "admin" | "user" }
                 )}
                 {reqLog.body?.tools && (
                   <Section title={`Tools (${reqLog.body.tools.length})`}>
-                    <pre className="bg-gray-50 p-3 rounded overflow-auto max-h-48 whitespace-pre-wrap">{JSON.stringify(reqLog.body.tools, null, 2)}</pre>
+                    <ToolList tools={reqLog.body.tools} />
                   </Section>
                 )}
                 <Section title="Raw JSON">
@@ -674,6 +681,71 @@ function getEventPreview(event: any): string {
   return "";
 }
 
+// --- Tool List ---
+
+function ToolList({ tools }: { tools: any[] }) {
+  return (
+    <div className="space-y-1">
+      {tools.map((tool, i) => <ToolItem key={i} tool={tool} />)}
+    </div>
+  );
+}
+
+function ToolItem({ tool }: { tool: any }) {
+  const [open, setOpen] = useState(false);
+  const name = tool.name || tool.function?.name || `Tool ${tool.type ?? ""}`;
+  const desc = tool.description || tool.function?.description;
+  const params = tool.input_schema || tool.function?.parameters;
+  const properties = params?.properties;
+  const required = new Set(params?.required ?? []);
+
+  return (
+    <div className="border border-gray-200 rounded">
+      <button
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-gray-50"
+      >
+        <span className={`text-gray-400 text-xs transition-transform ${open ? "rotate-90" : ""}`}>&#9654;</span>
+        <span className="font-mono font-medium text-indigo-700">{name}</span>
+        {desc && <span className="text-gray-400 truncate ml-1">— {desc}</span>}
+      </button>
+      {open && (
+        <div className="px-3 pb-3 space-y-2">
+          {desc && <div className="text-gray-600 text-xs">{desc}</div>}
+          {properties && Object.keys(properties).length > 0 ? (
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b border-gray-200 text-gray-500">
+                  <th className="py-1 pr-2 text-left font-medium">Parameter</th>
+                  <th className="py-1 pr-2 text-left font-medium">Type</th>
+                  <th className="py-1 text-left font-medium">Description</th>
+                </tr>
+              </thead>
+              <tbody>
+                {Object.entries(properties).map(([pName, pSchema]: [string, any]) => (
+                  <tr key={pName} className="border-b border-gray-50">
+                    <td className="py-1 pr-2 font-mono align-top">
+                      {pName}
+                      {required.has(pName) && <span className="text-red-400 ml-0.5">*</span>}
+                    </td>
+                    <td className="py-1 pr-2 text-gray-500 align-top whitespace-nowrap">
+                      {pSchema.type}
+                      {pSchema.enum && <span className="text-gray-400 ml-1">[{pSchema.enum.join(", ")}]</span>}
+                    </td>
+                    <td className="py-1 text-gray-600 break-all">{pSchema.description || "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <div className="text-gray-400 italic">No parameters</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // --- Copyable JSON block ---
 
 function CopyableJSON({ data }: { data: any }) {
@@ -717,16 +789,23 @@ function HeadersTable({ headers }: { headers?: Record<string, string> }) {
   if (!headers || Object.keys(headers).length === 0) {
     return <div className="text-gray-400 italic">No headers recorded</div>;
   }
+  const entries = Object.entries(headers);
+  const mid = Math.ceil(entries.length / 2);
+  const cols = [entries.slice(0, mid), entries.slice(mid)];
   return (
-    <table className="w-full text-xs">
-      <tbody>
-        {Object.entries(headers).map(([key, value]) => (
-          <tr key={key} className="border-b border-gray-100">
-            <td className="py-1 pr-3 font-mono text-gray-500 whitespace-nowrap align-top">{key}</td>
-            <td className="py-1 font-mono break-all">{value}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
+    <div className="grid grid-cols-2 gap-x-4">
+      {cols.map((col, ci) => (
+        <table key={ci} className="w-full text-xs">
+          <tbody>
+            {col.map(([key, value]) => (
+              <tr key={key} className="border-b border-gray-100">
+                <td className="py-1 pr-2 font-mono text-gray-500 whitespace-nowrap align-top">{key}</td>
+                <td className="py-1 font-mono break-all">{value}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ))}
+    </div>
   );
 }
