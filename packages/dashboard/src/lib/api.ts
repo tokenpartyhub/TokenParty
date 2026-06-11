@@ -95,7 +95,7 @@ export const api = {
     return request<any[]>(`/stats?${params}`);
   },
 
-  getRequests: (params?: { limit?: number; offset?: number; token_id?: string; provider_id?: string; model?: string; status?: string; tags?: string }) => {
+  getRequests: (params?: { limit?: number; offset?: number; token_id?: string; provider_id?: string; model?: string; status?: string; tags?: string; agent?: string }) => {
     const search = new URLSearchParams();
     if (params?.limit) search.set("limit", String(params.limit));
     if (params?.offset) search.set("offset", String(params.offset));
@@ -104,6 +104,7 @@ export const api = {
     if (params?.model) search.set("model", params.model);
     if (params?.status) search.set("status", params.status);
     if (params?.tags) search.set("tags", params.tags);
+    if (params?.agent) search.set("agent", params.agent);
     return request<{ data: any[]; total: number }>(`/requests?${search}`);
   },
 
@@ -128,6 +129,8 @@ export const api = {
       "/settings/log-storage", { method: "DELETE" }
     ),
 
+  restart: () => request<{ status: string }>("/restart", { method: "POST" }),
+
   // --- User APIs ---
   getUserProfile: () => request<any>("/user/profile"),
   getUserStats: (days?: number) => {
@@ -135,7 +138,7 @@ export const api = {
     if (days) params.set("days", String(days));
     return request<any[]>(`/user/stats?${params}`);
   },
-  getUserRequests: (params?: { limit?: number; offset?: number; provider_id?: string; model?: string; status?: string; tags?: string }) => {
+  getUserRequests: (params?: { limit?: number; offset?: number; provider_id?: string; model?: string; status?: string; tags?: string; agent?: string }) => {
     const search = new URLSearchParams();
     if (params?.limit) search.set("limit", String(params.limit));
     if (params?.offset) search.set("offset", String(params.offset));
@@ -143,6 +146,7 @@ export const api = {
     if (params?.model) search.set("model", params.model);
     if (params?.status) search.set("status", params.status);
     if (params?.tags) search.set("tags", params.tags);
+    if (params?.agent) search.set("agent", params.agent);
     return request<{ data: any[]; total: number }>(`/user/requests?${search}`);
   },
   getUserRequestDetail: (id: string) => request<any>(`/user/requests/${id}`),

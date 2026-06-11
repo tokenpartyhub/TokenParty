@@ -210,6 +210,7 @@ apiRoutes.get("/requests", (c) => {
   const model = c.req.query("model");
   const status = c.req.query("status");
   const tags = c.req.query("tags");
+  const agent = c.req.query("agent");
 
   let where = `WHERE 1=1`;
   const params: any[] = [];
@@ -219,6 +220,7 @@ apiRoutes.get("/requests", (c) => {
   if (model) { where += ` AND model = ?`; params.push(model); }
   if (status === "ok") { where += ` AND status = 200`; }
   else if (status === "error") { where += ` AND status != 200`; }
+  if (agent) { where += ` AND agent = ?`; params.push(agent); }
   if (tags) {
     for (const tag of tags.split(",").map((t) => t.trim()).filter(Boolean)) {
       where += ` AND custom_tags LIKE ?`;
@@ -267,6 +269,22 @@ apiRoutes.delete("/settings/log-storage", (c) => {
   const result = clearAllLogs();
   const stats = getLogStats();
   return c.json({ ...stats, cleared: result });
+});
+
+// --- Restart ---
+
+apiRoutes.post("/restart", async (c) => {
+  console.log("[tokenparty] Restart requested via API, restarting...");
+  const { spawn } = await import("node:child_process");
+  setTimeout(() => {
+    const child = spawn(process.execPath, process.argv.slice(1), {
+      detached: true,
+      stdio: "inherit",
+    });
+    child.unref();
+    process.exit(0);
+  }, 500);
+  return c.json({ status: "restarting" });
 });
 
 function maskKey(key: string): string {

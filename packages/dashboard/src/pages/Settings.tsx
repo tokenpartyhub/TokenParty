@@ -50,6 +50,7 @@ export default function Settings({ mode = "admin" }: { mode?: "admin" | "user" }
   const [logStorage, setLogStorage] = useState<LogStorageInfo | null>(null);
   const [maxSizeInput, setMaxSizeInput] = useState("");
   const [cleaning, setCleaning] = useState(false);
+  const [restarting, setRestarting] = useState(false);
 
   useEffect(() => {
     if (mode === "admin") {
@@ -217,9 +218,23 @@ export default function Settings({ mode = "admin" }: { mode?: "admin" | "user" }
             <div className="mt-3 p-3 bg-blue-50 rounded text-xs text-gray-700 space-y-1">
               <p className="font-medium">Update to v{latestVersion}:</p>
               <code className="block bg-white px-2 py-1 rounded border text-xs font-mono">npm update -g @zhouzhengchang/token-party</code>
-              <p className="text-gray-500">Restart the service after updating.</p>
             </div>
           )}
+          <div className="mt-3 flex items-center gap-2">
+            <button
+              disabled={restarting}
+              onClick={() => {
+                setRestarting(true);
+                api.restart().then(() => {
+                  setTimeout(() => window.location.reload(), 3000);
+                }).catch(() => setRestarting(false));
+              }}
+              className="px-3 py-1.5 text-xs border rounded hover:bg-gray-50 text-orange-600 border-orange-200 hover:bg-orange-50"
+            >
+              {restarting ? "Restarting..." : "Restart Service"}
+            </button>
+            {restarting && <span className="text-xs text-gray-400">Page will reload in a few seconds...</span>}
+          </div>
         </div>
       )}
     </div>
