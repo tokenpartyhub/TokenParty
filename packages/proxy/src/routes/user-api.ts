@@ -85,6 +85,9 @@ userApiRoutes.get("/requests", (c) => {
   const model = c.req.query("model");
   const status = c.req.query("status");
   const tags = c.req.query("tags");
+  const agent = c.req.query("agent");
+  const dateFrom = c.req.query("date_from");
+  const dateTo = c.req.query("date_to");
 
   let where = `WHERE token_id = ?`;
   const params: any[] = [token.key];
@@ -93,6 +96,9 @@ userApiRoutes.get("/requests", (c) => {
   if (model) { where += ` AND model = ?`; params.push(model); }
   if (status === "ok") { where += ` AND status = 200`; }
   else if (status === "error") { where += ` AND status != 200`; }
+  if (agent) { where += ` AND agent = ?`; params.push(agent); }
+  if (dateFrom) { where += ` AND timestamp >= ?`; params.push(dateFrom + "T00:00:00"); }
+  if (dateTo) { where += ` AND timestamp <= ?`; params.push(dateTo + "T23:59:59"); }
   if (tags) {
     for (const tag of tags.split(",").map((t) => t.trim()).filter(Boolean)) {
       where += ` AND custom_tags LIKE ?`;

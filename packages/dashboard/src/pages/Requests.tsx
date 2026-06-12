@@ -11,9 +11,11 @@ interface Filters {
   status: string;
   tags: string;
   agent: string;
+  date_from: string;
+  date_to: string;
 }
 
-const emptyFilters: Filters = { token_id: "", provider_id: "", model: "", status: "", tags: "", agent: "" };
+const emptyFilters: Filters = { token_id: "", provider_id: "", model: "", status: "", tags: "", agent: "", date_from: "", date_to: "" };
 
 const KNOWN_AGENTS = ["claude-code", "codex", "openclaw"];
 
@@ -85,6 +87,8 @@ export default function Requests({ mode = "admin" }: { mode?: "admin" | "user" }
     if (filters.status) params.status = filters.status;
     if (filters.tags) params.tags = filters.tags;
     if (filters.agent) params.agent = filters.agent;
+    if (filters.date_from) params.date_from = filters.date_from;
+    if (filters.date_to) params.date_to = filters.date_to;
     if (mode === "admin") {
       if (filters.token_id) params.token_id = filters.token_id;
       api.getRequests(params).then((res) => {
@@ -169,6 +173,21 @@ export default function Requests({ mode = "admin" }: { mode?: "admin" | "user" }
             onChange={(e) => updateFilter({ tags: e.target.value })}
             className="border rounded px-2 py-1.5 text-sm w-48"
           />
+          <div className="flex items-center gap-1">
+            <input
+              type="date"
+              value={filters.date_from}
+              onChange={(e) => updateFilter({ date_from: e.target.value })}
+              className="border rounded px-2 py-1.5 text-sm"
+            />
+            <span className="text-gray-400 text-xs">~</span>
+            <input
+              type="date"
+              value={filters.date_to}
+              onChange={(e) => updateFilter({ date_to: e.target.value })}
+              className="border rounded px-2 py-1.5 text-sm"
+            />
+          </div>
           {hasFilters && (
             <button onClick={() => { setFilters(emptyFilters); setOffset(0); }} className="px-2 py-1.5 text-sm text-gray-500 hover:text-gray-700">
               Reset
@@ -216,9 +235,25 @@ export default function Requests({ mode = "admin" }: { mode?: "admin" | "user" }
             </tbody>
           </table>
         </div>
-        <div className="flex justify-between mt-4 text-sm">
+        <div className="flex items-center justify-between mt-4 text-sm">
           <button disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - limit))} className="px-3 py-1 border rounded disabled:opacity-50">Previous</button>
-          <span className="text-gray-500">{offset + 1}-{Math.min(offset + limit, total)} of {total}</span>
+          <div className="flex items-center gap-2 text-gray-500">
+            <span>{offset + 1}-{Math.min(offset + limit, total)} of {total}</span>
+            <span className="text-gray-300">|</span>
+            <span>Page</span>
+            <input
+              type="number"
+              min={1}
+              max={Math.max(1, Math.ceil(total / limit))}
+              value={Math.floor(offset / limit) + 1}
+              onChange={(e) => {
+                const page = Math.max(1, Math.min(Math.ceil(total / limit), Number(e.target.value) || 1));
+                setOffset((page - 1) * limit);
+              }}
+              className="w-14 border rounded px-2 py-0.5 text-center text-sm"
+            />
+            <span>/ {Math.max(1, Math.ceil(total / limit))}</span>
+          </div>
           <button disabled={offset + limit >= total} onClick={() => setOffset(offset + limit)} className="px-3 py-1 border rounded disabled:opacity-50">Next</button>
         </div>
       </div>

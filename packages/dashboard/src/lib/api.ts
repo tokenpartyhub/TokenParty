@@ -95,7 +95,7 @@ export const api = {
     return request<any[]>(`/stats?${params}`);
   },
 
-  getRequests: (params?: { limit?: number; offset?: number; token_id?: string; provider_id?: string; model?: string; status?: string; tags?: string; agent?: string }) => {
+  getRequests: (params?: { limit?: number; offset?: number; token_id?: string; provider_id?: string; model?: string; status?: string; tags?: string; agent?: string; date_from?: string; date_to?: string }) => {
     const search = new URLSearchParams();
     if (params?.limit) search.set("limit", String(params.limit));
     if (params?.offset) search.set("offset", String(params.offset));
@@ -105,6 +105,8 @@ export const api = {
     if (params?.status) search.set("status", params.status);
     if (params?.tags) search.set("tags", params.tags);
     if (params?.agent) search.set("agent", params.agent);
+    if (params?.date_from) search.set("date_from", params.date_from);
+    if (params?.date_to) search.set("date_to", params.date_to);
     return request<{ data: any[]; total: number }>(`/requests?${search}`);
   },
 
@@ -138,7 +140,7 @@ export const api = {
     if (days) params.set("days", String(days));
     return request<any[]>(`/user/stats?${params}`);
   },
-  getUserRequests: (params?: { limit?: number; offset?: number; provider_id?: string; model?: string; status?: string; tags?: string; agent?: string }) => {
+  getUserRequests: (params?: { limit?: number; offset?: number; provider_id?: string; model?: string; status?: string; tags?: string; agent?: string; date_from?: string; date_to?: string }) => {
     const search = new URLSearchParams();
     if (params?.limit) search.set("limit", String(params.limit));
     if (params?.offset) search.set("offset", String(params.offset));
@@ -147,6 +149,8 @@ export const api = {
     if (params?.status) search.set("status", params.status);
     if (params?.tags) search.set("tags", params.tags);
     if (params?.agent) search.set("agent", params.agent);
+    if (params?.date_from) search.set("date_from", params.date_from);
+    if (params?.date_to) search.set("date_to", params.date_to);
     return request<{ data: any[]; total: number }>(`/user/requests?${search}`);
   },
   getUserRequestDetail: (id: string) => request<any>(`/user/requests/${id}`),
