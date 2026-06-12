@@ -263,73 +263,97 @@ export default function Providers() {
 
       {editing && (
         <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-lg p-6 w-[560px] max-h-[90vh] overflow-y-auto">
-            <h3 className="text-lg font-bold mb-4">{isNew ? "Add" : "Edit"} Provider</h3>
-            <div className="space-y-3">
-              <Field label="Name" value={editing.name ?? ""} onChange={(v) => setEditing({ ...editing, name: v })} />
-              <div>
-                <label className="block text-sm text-gray-600 mb-1">Type</label>
-                <select
-                  value={editing.type ?? "openai"}
-                  onChange={(e) => setEditing({ ...editing, type: e.target.value })}
-                  className="w-full border rounded px-3 py-2 text-sm"
-                >
-                  <option value="openai">OpenAI</option>
-                  <option value="anthropic">Anthropic</option>
-                </select>
-              </div>
-              <Field label="Base URL" value={editing.baseUrl ?? ""} onChange={(v) => setEditing({ ...editing, baseUrl: v })} />
-              <div>
-                <label className="block text-sm text-gray-600 mb-1">API Keys</label>
-                <div className="space-y-1.5">
-                  {(Array.isArray(editing.apiKey) ? editing.apiKey : [editing.apiKey ?? ""]).map((key, i, arr) => (
-                    <div key={i} className="flex gap-1.5">
-                      <input
-                        type="text"
-                        value={key}
-                        onChange={(e) => {
-                          const keys = [...arr];
-                          keys[i] = e.target.value;
-                          setEditing({ ...editing, apiKey: keys.length === 1 ? keys[0] : keys });
-                        }}
-                        placeholder="sk-your-api-key"
-                        className="flex-1 border rounded px-3 py-1.5 text-sm font-mono"
-                      />
-                      {arr.length > 1 && (
-                        <button
-                          onClick={() => {
-                            const keys = arr.filter((_, j) => j !== i);
+          <div className="bg-white rounded-lg shadow-lg p-6 w-[900px] max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-bold">{isNew ? "Add" : "Edit"} Provider</h3>
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={editing.enabled ?? true}
+                  onChange={(e) => setEditing({ ...editing, enabled: e.target.checked })}
+                />
+                Enabled
+              </label>
+            </div>
+            <div className="flex gap-6">
+              {/* Left: Connection */}
+              <div className="flex-1 space-y-3 min-w-0">
+                <div className="flex gap-3">
+                  <div className="flex-1">
+                    <Field label="Name" value={editing.name ?? ""} onChange={(v) => setEditing({ ...editing, name: v })} />
+                  </div>
+                  <div className="w-32">
+                    <label className="block text-sm text-gray-600 mb-1">Type</label>
+                    <select
+                      value={editing.type ?? "openai"}
+                      onChange={(e) => setEditing({ ...editing, type: e.target.value })}
+                      className="w-full border rounded px-3 py-2 text-sm"
+                    >
+                      <option value="openai">OpenAI</option>
+                      <option value="anthropic">Anthropic</option>
+                    </select>
+                  </div>
+                </div>
+                <Field label="Base URL" value={editing.baseUrl ?? ""} onChange={(v) => setEditing({ ...editing, baseUrl: v })} />
+                <div>
+                  <label className="block text-sm text-gray-600 mb-1">API Keys</label>
+                  <div className="space-y-1.5">
+                    {(Array.isArray(editing.apiKey) ? editing.apiKey : [editing.apiKey ?? ""]).map((key, i, arr) => (
+                      <div key={i} className="flex gap-1.5">
+                        <input
+                          type="text"
+                          value={key}
+                          onChange={(e) => {
+                            const keys = [...arr];
+                            keys[i] = e.target.value;
                             setEditing({ ...editing, apiKey: keys.length === 1 ? keys[0] : keys });
                           }}
-                          className="text-red-400 hover:text-red-600 px-1.5 text-sm"
-                        >×</button>
-                      )}
-                    </div>
-                  ))}
-                  <button
-                    onClick={() => {
-                      const keys = Array.isArray(editing.apiKey) ? [...editing.apiKey, ""] : [editing.apiKey ?? "", ""];
-                      setEditing({ ...editing, apiKey: keys });
-                    }}
-                    className="text-xs text-indigo-600 hover:underline"
-                  >+ Add key</button>
+                          placeholder="sk-your-api-key"
+                          className="flex-1 border rounded px-3 py-1.5 text-sm font-mono"
+                        />
+                        {arr.length > 1 && (
+                          <button
+                            onClick={() => {
+                              const keys = arr.filter((_, j) => j !== i);
+                              setEditing({ ...editing, apiKey: keys.length === 1 ? keys[0] : keys });
+                            }}
+                            className="text-red-400 hover:text-red-600 px-1.5 text-sm"
+                          >×</button>
+                        )}
+                      </div>
+                    ))}
+                    <button
+                      onClick={() => {
+                        const keys = Array.isArray(editing.apiKey) ? [...editing.apiKey, ""] : [editing.apiKey ?? "", ""];
+                        setEditing({ ...editing, apiKey: keys });
+                      }}
+                      className="text-xs text-indigo-600 hover:underline"
+                    >+ Add key</button>
+                  </div>
+                  <p className="text-xs text-gray-400 mt-1">Multiple keys enable load balancing</p>
                 </div>
-                <p className="text-xs text-gray-400 mt-1">Multiple keys enable load balancing</p>
               </div>
-              <div>
-                <label className="block text-sm text-gray-600 mb-1">Currency</label>
-                <select
-                  value={editing.currency ?? "USD"}
-                  onChange={(e) => setEditing({ ...editing, currency: e.target.value })}
-                  className="w-32 border rounded px-3 py-2 text-sm"
-                >
-                  <option value="USD">$ USD</option>
-                  <option value="CNY">¥ CNY</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm text-gray-600 mb-1">Models</label>
-                <div className="space-y-3">
+
+              {/* Divider */}
+              <div className="w-px bg-gray-200 shrink-0" />
+
+              {/* Right: Models */}
+              <div className="flex-1 space-y-3 min-w-0">
+                <div className="flex items-center justify-between">
+                  <label className="text-sm text-gray-600 font-medium">Models</label>
+                  <div className="flex items-center gap-2">
+                    <label className="text-xs text-gray-500">Currency</label>
+                    <select
+                      value={editing.currency ?? "USD"}
+                      onChange={(e) => setEditing({ ...editing, currency: e.target.value })}
+                      className="border rounded px-2 py-1 text-xs"
+                    >
+                      <option value="USD">$ USD</option>
+                      <option value="CNY">¥ CNY</option>
+                    </select>
+                  </div>
+                </div>
+                <div className="space-y-2">
                   {(editing.models ?? []).map((m, i) => {
                     const sym = (editing.currency ?? "USD") === "CNY" ? "¥" : "$";
                     return (
@@ -349,7 +373,7 @@ export default function Providers() {
                             type="number"
                             value={typeof m === "object" ? (m.inputPrice ?? "") : ""}
                             onChange={(e) => updateModel(i, "inputPrice", e.target.value ? Number(e.target.value) : undefined)}
-                            placeholder={`Input ${sym}/1M`}
+                            placeholder={`In ${sym}/1M`}
                             title={`Input price (${sym} per 1M tokens)`}
                             className="border rounded px-2 py-1 text-xs"
                           />
@@ -357,7 +381,7 @@ export default function Providers() {
                             type="number"
                             value={typeof m === "object" ? (m.outputPrice ?? "") : ""}
                             onChange={(e) => updateModel(i, "outputPrice", e.target.value ? Number(e.target.value) : undefined)}
-                            placeholder={`Output ${sym}/1M`}
+                            placeholder={`Out ${sym}/1M`}
                             title={`Output price (${sym} per 1M tokens)`}
                             className="border rounded px-2 py-1 text-xs"
                           />
@@ -365,15 +389,15 @@ export default function Providers() {
                             type="number"
                             value={typeof m === "object" ? (m.cacheReadPrice ?? "") : ""}
                             onChange={(e) => updateModel(i, "cacheReadPrice", e.target.value ? Number(e.target.value) : undefined)}
-                            placeholder={`Cache Read ${sym}/1M`}
-                            title={`Cached read price (${sym} per 1M tokens)`}
+                            placeholder={`CR ${sym}/1M`}
+                            title={`Cache read price (${sym} per 1M tokens)`}
                             className="border rounded px-2 py-1 text-xs"
                           />
                           <input
                             type="number"
                             value={typeof m === "object" ? (m.cacheWritePrice ?? "") : ""}
                             onChange={(e) => updateModel(i, "cacheWritePrice", e.target.value ? Number(e.target.value) : undefined)}
-                            placeholder={`Cache Write ${sym}/1M`}
+                            placeholder={`CW ${sym}/1M`}
                             title={`Cache write price (${sym} per 1M tokens)`}
                             className="border rounded px-2 py-1 text-xs"
                           />
@@ -382,19 +406,11 @@ export default function Providers() {
                     );
                   })}
                   <button onClick={addModel} type="button" className="text-sm text-indigo-600 hover:underline">+ Add model</button>
-                  <div className="text-xs text-gray-400">Prices per 1M tokens (optional). Unconfigured prices are treated as free and routed with highest priority.</div>
+                  <div className="text-xs text-gray-400">Prices per 1M tokens (optional). Unconfigured = free, routed with highest priority.</div>
                 </div>
               </div>
-              <label className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={editing.enabled ?? true}
-                  onChange={(e) => setEditing({ ...editing, enabled: e.target.checked })}
-                />
-                Enabled
-              </label>
             </div>
-            <div className="flex justify-end gap-2 mt-6">
+            <div className="flex justify-end gap-2 mt-6 pt-4 border-t">
               <button onClick={() => setEditing(null)} className="px-4 py-2 border rounded text-sm">Cancel</button>
               <button onClick={save} className="px-4 py-2 bg-indigo-600 text-white rounded text-sm">Save</button>
             </div>
