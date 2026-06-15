@@ -953,23 +953,16 @@ function HeadersTable({ headers }: { headers?: Record<string, string> }) {
   if (!headers || Object.keys(headers).length === 0) {
     return <div className="text-gray-400 italic">No headers recorded</div>;
   }
-  const entries = Object.entries(headers);
-  const mid = Math.ceil(entries.length / 2);
-  const cols = [entries.slice(0, mid), entries.slice(mid)];
   return (
-    <div className="grid grid-cols-2 gap-x-4">
-      {cols.map((col, ci) => (
-        <table key={ci} className="w-full text-xs">
-          <tbody>
-            {col.map(([key, value]) => (
-              <tr key={key} className="border-b border-gray-100">
-                <td className="py-1 pr-2 font-mono text-gray-500 whitespace-nowrap align-top">{key}</td>
-                <td className="py-1 font-mono break-all">{value}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      ))}
-    </div>
+    <table className="w-full text-xs">
+      <tbody>
+        {Object.entries(headers).map(([key, value]) => (
+          <tr key={key} className="border-b border-gray-100">
+            <td className="py-1 pr-2 font-mono text-gray-500 whitespace-nowrap align-top">{key}</td>
+            <td className="py-1 font-mono break-all">{value}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }
