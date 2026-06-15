@@ -61,7 +61,7 @@ export default function Requests({ mode = "admin" }: { mode?: "admin" | "user" }
   const [providers, setProviders] = useState<{ id: string; name: string }[]>([]);
   const [models, setModels] = useState<string[]>([]);
   const [filters, setFilters] = useState<Filters>(emptyFilters);
-  const limit = 20;
+  const [limit, setLimit] = useState(20);
 
   useEffect(() => {
     if (mode === "admin") {
@@ -101,7 +101,7 @@ export default function Requests({ mode = "admin" }: { mode?: "admin" | "user" }
         setTotal(res.total);
       }).catch(console.error);
     }
-  }, [offset, filters, mode]);
+  }, [offset, limit, filters, mode]);
 
   const updateFilter = (patch: Partial<Filters>) => {
     setFilters((prev) => ({ ...prev, ...patch }));
@@ -238,6 +238,13 @@ export default function Requests({ mode = "admin" }: { mode?: "admin" | "user" }
         <div className="flex items-center justify-between mt-4 text-sm">
           <button disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - limit))} className="px-3 py-1 border rounded disabled:opacity-50">Previous</button>
           <div className="flex items-center gap-2 text-gray-500">
+            <select
+              value={limit}
+              onChange={(e) => { setLimit(Number(e.target.value)); setOffset(0); }}
+              className="border rounded px-1 py-0.5 text-sm"
+            >
+              {[20, 50, 100, 200].map((n) => <option key={n} value={n}>{n} / page</option>)}
+            </select>
             <span>{offset + 1}-{Math.min(offset + limit, total)} of {total}</span>
             <span className="text-gray-300">|</span>
             <span>Page</span>
