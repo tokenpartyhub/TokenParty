@@ -7,6 +7,7 @@ import { getConfig } from "../config.js";
 import { nanoid } from "nanoid";
 import { writeLog, headersToRecord } from "../store/log-writer.js";
 import { recordRequest } from "../metrics/collector.js";
+import { extractTags } from "../tags/registry.js";
 import { createGunzip, createInflate, createBrotliDecompress, createZstdDecompress } from "node:zlib";
 import { Readable, Transform } from "node:stream";
 import { request as httpsRequest } from "node:https";
@@ -83,7 +84,9 @@ export async function forwardRequest(
     }
   });
 
-  const customTags = c.req.raw.headers.get("x-tkparty-tags") ?? "";
+  const extractedTags = extractTags({ headers: c.req.raw.headers, path: c.req.path, body, model });
+  const agent = extractedTags.agent ?? "";
+  const customTags = extractedTags.tags ?? "";
 
   const logFile = writeLog(requestId, {
     type: "request",
@@ -97,7 +100,7 @@ export async function forwardRequest(
   try {
     // Same protocol streaming: use http.request for raw passthrough (no auto-decompression)
     if (isStreaming && !needsStreamConversion) {
-      return await rawStreamPassthrough(c, targetUrl, upstreamHeaders, body, requestId, provider, model, token, startTime, logFile, apiKeyIndex, pricing, customTags);
+      return await rawStreamPassthrough(c, targetUrl, upstreamHeaders, body, requestId, provider, model, token, startTime, logFile, apiKeyIndex, pricing, agent, customTags);
     }
 
     const response = await fetch(targetUrl, {
@@ -221,7 +224,8 @@ export async function forwardRequest(
             apiKeyIndex,
             pricing,
             currency: provider.currency,
-            customTags,
+            agent,
+      customTags,
           });
         }
       });
@@ -253,6 +257,7 @@ export async function forwardRequest(
       apiKeyIndex,
       pricing,
       currency: provider.currency,
+      agent,
       customTags,
     });
 
@@ -283,6 +288,7 @@ export async function forwardRequest(
       apiKeyIndex,
       pricing,
       currency: provider.currency,
+      agent,
       customTags,
     });
 
@@ -337,6 +343,7 @@ function rawStreamPassthrough(
   logFile: string,
   apiKeyIndex: number,
   pricing?: { inputPrice?: number; outputPrice?: number; cacheReadPrice?: number; cacheWritePrice?: number },
+  agent?: string,
   customTags?: string,
 ): Promise<Response> {
   const url = new URL(targetUrl);
@@ -368,7 +375,7 @@ function rawStreamPassthrough(
         },
         flush(callback) {
           // Async parse for logging after stream ends
-          asyncParseBufferForLog(rawChunks, res.headers["content-encoding"] as string | undefined, requestId, respHeaders, provider, model, token, startTime, logFile, apiKeyIndex, pricing, customTags);
+          asyncParseBufferForLog(rawChunks, res.headers["content-encoding"] as string | undefined, requestId, respHeaders, provider, model, token, startTime, logFile, apiKeyIndex, pricing, agent, customTags);
           callback();
         },
       });
@@ -395,6 +402,7 @@ function asyncParseBufferForLog(
   logFile: string,
   apiKeyIndex: number,
   pricing?: { inputPrice?: number; outputPrice?: number; cacheReadPrice?: number; cacheWritePrice?: number },
+  agent?: string,
   customTags?: string,
 ) {
   (async () => {
@@ -476,6 +484,7 @@ function asyncParseBufferForLog(
       apiKeyIndex,
       pricing,
       currency: provider.currency,
+      agent,
       customTags,
     });
   })().catch((e) => console.error(`[tokenparty] async log parse error for ${requestId}:`, e));

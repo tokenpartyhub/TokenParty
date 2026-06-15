@@ -26,6 +26,7 @@ function runMigrations(db: Database.Database) {
       token_id TEXT NOT NULL,
       provider_id TEXT NOT NULL,
       model TEXT NOT NULL,
+      agent TEXT DEFAULT '',
       request_count INTEGER DEFAULT 0,
       input_tokens INTEGER DEFAULT 0,
       output_tokens INTEGER DEFAULT 0,
@@ -33,7 +34,7 @@ function runMigrations(db: Database.Database) {
       cache_write_tokens INTEGER DEFAULT 0,
       cost REAL DEFAULT 0,
       currency TEXT DEFAULT 'USD',
-      PRIMARY KEY (date, token_id, provider_id, model)
+      PRIMARY KEY (date, token_id, provider_id, model, agent)
     );
 
     CREATE TABLE IF NOT EXISTS request_index (
@@ -53,6 +54,7 @@ function runMigrations(db: Database.Database) {
       api_key_index INTEGER DEFAULT 0,
       cost REAL DEFAULT 0,
       currency TEXT DEFAULT 'USD',
+      agent TEXT DEFAULT '',
       custom_tags TEXT DEFAULT ''
     );
 
@@ -95,6 +97,9 @@ function runMigrations(db: Database.Database) {
   if (!colNames.has("custom_tags")) {
     db.exec(`ALTER TABLE request_index ADD COLUMN custom_tags TEXT DEFAULT ''`);
   }
+  if (!colNames.has("agent")) {
+    db.exec(`ALTER TABLE request_index ADD COLUMN agent TEXT DEFAULT ''`);
+  }
 
   const dailyCols = db.prepare(`PRAGMA table_info(usage_daily)`).all() as { name: string }[];
   const dailyColNames = new Set(dailyCols.map((c) => c.name));
@@ -112,6 +117,30 @@ function runMigrations(db: Database.Database) {
   }
   if (!dailyColNames.has("currency")) {
     db.exec(`ALTER TABLE usage_daily ADD COLUMN currency TEXT DEFAULT 'USD'`);
+  }
+  if (!dailyColNames.has("agent")) {
+    db.exec(`ALTER TABLE usage_daily ADD COLUMN agent TEXT DEFAULT ''`);
+    // Rebuild primary key to include agent — SQLite requires table recreation
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS usage_daily_new (
+        date TEXT NOT NULL,
+        token_id TEXT NOT NULL,
+        provider_id TEXT NOT NULL,
+        model TEXT NOT NULL,
+        agent TEXT DEFAULT '',
+        request_count INTEGER DEFAULT 0,
+        input_tokens INTEGER DEFAULT 0,
+        output_tokens INTEGER DEFAULT 0,
+        cache_read_tokens INTEGER DEFAULT 0,
+        cache_write_tokens INTEGER DEFAULT 0,
+        cost REAL DEFAULT 0,
+        currency TEXT DEFAULT 'USD',
+        PRIMARY KEY (date, token_id, provider_id, model, agent)
+      );
+      INSERT INTO usage_daily_new SELECT date, token_id, provider_id, model, COALESCE(agent, ''), request_count, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost, currency FROM usage_daily;
+      DROP TABLE usage_daily;
+      ALTER TABLE usage_daily_new RENAME TO usage_daily;
+    `);
   }
 }
 

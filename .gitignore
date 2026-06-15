@@ -12,3 +12,4 @@ packages/proxy/data/
 .env
 .env.*
 .claude
+.gstack/

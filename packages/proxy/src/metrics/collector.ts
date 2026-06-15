@@ -16,6 +16,7 @@ export interface RequestRecord {
   apiKeyIndex?: number;
   pricing?: { inputPrice?: number; outputPrice?: number; cacheReadPrice?: number; cacheWritePrice?: number };
   currency?: string;
+  agent?: string;
   customTags?: string;
 }
 
@@ -44,19 +45,22 @@ export function recordRequest(record: RequestRecord) {
   let cost = calculateCost(record.inputTokens, record.outputTokens, cacheReadTokens, cacheWriteTokens, record.pricing);
   if (record.currency === "CNY") cost *= CNY_TO_USD;
 
+  const agent = record.agent ?? "";
+  const customTags = record.customTags ?? "";
+
   db.prepare(`
-    INSERT INTO request_index (id, timestamp, token_id, provider_id, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, latency_ms, status, log_file, error, api_key_index, cost, custom_tags)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO request_index (id, timestamp, token_id, provider_id, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, latency_ms, status, log_file, error, api_key_index, cost, agent, custom_tags)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     record.id, now, record.tokenId, record.providerId, record.model,
     record.inputTokens, record.outputTokens, cacheReadTokens, cacheWriteTokens, record.latencyMs,
-    record.status, record.logFile, record.error ?? null, record.apiKeyIndex ?? 0, cost, record.customTags ?? ""
+    record.status, record.logFile, record.error ?? null, record.apiKeyIndex ?? 0, cost, agent, customTags
   );
 
   db.prepare(`
-    INSERT INTO usage_daily (date, token_id, provider_id, model, request_count, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost)
-    VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
-    ON CONFLICT(date, token_id, provider_id, model)
+    INSERT INTO usage_daily (date, token_id, provider_id, model, agent, request_count, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost)
+    VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
+    ON CONFLICT(date, token_id, provider_id, model, agent)
     DO UPDATE SET
       request_count = request_count + 1,
       input_tokens = input_tokens + excluded.input_tokens,
@@ -64,5 +68,5 @@ export function recordRequest(record: RequestRecord) {
       cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
       cache_write_tokens = cache_write_tokens + excluded.cache_write_tokens,
       cost = cost + excluded.cost
-  `).run(date, record.tokenId, record.providerId, record.model, record.inputTokens, record.outputTokens, cacheReadTokens, cacheWriteTokens, cost);
+  `).run(date, record.tokenId, record.providerId, record.model, agent, record.inputTokens, record.outputTokens, cacheReadTokens, cacheWriteTokens, cost);
 }

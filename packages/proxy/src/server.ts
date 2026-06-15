@@ -7,6 +7,9 @@ import { openaiRoutes } from "./routes/openai.js";
 import { anthropicRoutes } from "./routes/anthropic.js";
 import { apiRoutes } from "./routes/api.js";
 import { userApiRoutes } from "./routes/user-api.js";
+import { registerExtractor } from "./tags/registry.js";
+import { agentDetector } from "./tags/extractors/agent-detector.js";
+import { headerTags } from "./tags/extractors/header-tags.js";
 
 function findDashboardRoot(): string | null {
   const candidates = [
@@ -20,6 +23,9 @@ function findDashboardRoot(): string | null {
 }
 
 export function createServer() {
+  registerExtractor(agentDetector);
+  registerExtractor(headerTags);
+
   const app = new Hono();
 
   app.use("/*", cors());

@@ -252,14 +252,14 @@ TokenParty/
 - [x] Provider groups & access control
 - [x] Provider fallback / retry
 - [x] Log storage management
-- [ ] Automatic prompt cache optimization
-- [ ] Automatic provider failover (health-based)
+- [ ] Automatic prompt cache optimization (Anthropic cache_control injection)
 - [ ] Cost savings report ("TokenParty saved you $XX")
-- [ ] Tag-based cost analysis
-- [ ] Usage alerts (webhook/email)
-- [ ] Model downgrade strategy (budget-aware)
+- [ ] Tag-based cost analysis (cost breakdown by project/feature)
+- [ ] Usage alerts (webhook/email at budget thresholds)
+- [ ] Model downgrade strategy (budget-aware auto-routing)
 - [ ] Rate limiting enforcement
 - [ ] Session tracking
+- [ ] Export billing reports (CSV/PDF)
 
 ## License
 
