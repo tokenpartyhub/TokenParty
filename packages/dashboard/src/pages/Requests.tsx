@@ -524,22 +524,21 @@ function RouteTrace({ trace, providers }: { trace?: string; providers: { id: str
   } catch {
     return null;
   }
-  if (!nodes || nodes.length === 0) return null;
-  if (nodes.length === 1) return null;
+  if (!nodes || nodes.length <= 1) return null;
 
   const nameMap = Object.fromEntries(providers.map((p) => [p.id, p.name]));
+  const failedNodes = nodes.slice(0, -1);
 
   return (
     <span className="inline-flex items-center gap-1">
-      {nodes.map((node, i) => {
-        const ok = node.status !== null && node.status >= 200 && node.status < 400;
+      {failedNodes.map((node, i) => {
         const name = nameMap[node.provider] ?? node.provider;
         return (
           <span key={i} className="inline-flex items-center gap-1">
-            {i > 0 && <span className="text-gray-300">&rarr;</span>}
-            <span className={ok ? "text-green-600" : "text-red-500"}>
-              {name}{node.reason ? `(${node.reason})` : ""}
+            <span className="text-red-500">
+              {name} {node.status ?? "err"}{node.reason ? ` (${node.reason})` : ""}
             </span>
+            <span className="text-gray-300">&rarr;</span>
           </span>
         );
       })}
