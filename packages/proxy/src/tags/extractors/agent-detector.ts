@@ -1,9 +1,24 @@
 import type { TagExtractor, TagContext } from "../types.js";
 
 interface AgentRule {
-  match: (ua: string, headers: Headers) => boolean;
+  match: (ua: string, headers: Headers, body?: any) => boolean;
   agent: string;
-  extractMeta?: (ua: string, headers: Headers) => Record<string, string>;
+  extractMeta?: (ua: string, headers: Headers, body?: any) => Record<string, string>;
+}
+
+// Extract the first line of body.system, handling both string and
+// array-of-blocks ({type, text}) forms. Returns "" when unavailable.
+function getSystemFirstLine(body?: any): string {
+  if (!body?.system) return "";
+  let text: string;
+  if (typeof body.system === "string") {
+    text = body.system;
+  } else if (Array.isArray(body.system) && body.system[0]?.text) {
+    text = body.system[0].text;
+  } else {
+    return "";
+  }
+  return text.split("\n")[0]?.trim() ?? "";
 }
 
 const rules: AgentRule[] = [
@@ -34,7 +49,10 @@ const rules: AgentRule[] = [
     },
   },
   {
-    match: (_ua, h) => h.has("x-openclaw"),
+    // OpenClaw does not send an identifying User-Agent (uses generic "undici")
+    // nor any custom header. Its signature is the first line of the system
+    // prompt: "You are a personal assistant running inside OpenClaw."
+    match: (_ua, _h, body) => getSystemFirstLine(body).includes("OpenClaw"),
     agent: "openclaw",
   },
 ];
@@ -44,10 +62,10 @@ export const agentDetector: TagExtractor = {
   extract(ctx: TagContext) {
     const ua = (ctx.headers.get("user-agent") ?? "").toLowerCase();
     for (const rule of rules) {
-      if (rule.match(ua, ctx.headers)) {
+      if (rule.match(ua, ctx.headers, ctx.body)) {
         const tags: Record<string, string> = { agent: rule.agent };
         if (rule.extractMeta) {
-          Object.assign(tags, rule.extractMeta(ua, ctx.headers));
+          Object.assign(tags, rule.extractMeta(ua, ctx.headers, ctx.body));
         }
         return tags;
       }
