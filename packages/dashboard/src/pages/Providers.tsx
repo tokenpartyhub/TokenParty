@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { api } from "../lib/api";
 
 type ModelConfig = string | { id: string; inputPrice?: number; outputPrice?: number; cacheReadPrice?: number; cacheWritePrice?: number; priority?: number };
@@ -515,7 +515,7 @@ function RoutingView({ providers, onEdit }: { providers: Provider[]; onEdit: (p:
   return (
     <div className="space-y-3">
       <div className="text-xs text-gray-500 bg-indigo-50 border border-indigo-100 rounded px-3 py-2">
-        Each model shows its provider fallback chain in routing order (priority asc, then price asc). On <b>429 / 5xx / network error</b>, the next provider in the chain is tried automatically. Disabled providers are dimmed and skipped.
+        Each model shows its provider fallback chain in routing order (priority asc, then price asc). Solid arrow = primary path; dashed arrow = tried on <b>429 / 5xx / network error</b>. Disabled providers are dimmed.
       </div>
       {modelEntries.map(([modelId, list]) => {
         const enabledCount = list.filter((x) => x.provider.enabled).length;
@@ -529,67 +529,131 @@ function RoutingView({ providers, onEdit }: { providers: Provider[]; onEdit: (p:
                 {enabledCount > 1 && <span className="ml-1 text-indigo-600">→ fallback chain</span>}
               </span>
             </div>
-            <div className="divide-y">
-              {list.map((entry, idx) => {
-                const { provider, model } = entry;
-                const isPrimary = idx === 0 && provider.enabled;
-                const pricing = getModelPricing(model);
-                const prio = getModelPriority(model);
-                const sym = (provider.currency ?? "USD") === "CNY" ? "¥" : "$";
-                return (
-                  <div
-                    key={provider.id}
-                    className={`flex items-center gap-3 px-4 py-2 ${provider.enabled ? "" : "opacity-40"}`}
-                  >
-                    <div className="w-7 text-center shrink-0">
-                      <span className={`inline-flex items-center justify-center w-5 h-5 rounded-full text-xs font-medium ${isPrimary ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-500"}`}>
-                        {idx + 1}
-                      </span>
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="text-sm font-medium">{provider.name}</span>
-                        <span className="text-xs text-gray-400 font-mono">{provider.id}</span>
-                        {provider.group && <span className="px-1.5 py-0.5 rounded bg-gray-100 text-gray-500 text-xs">{provider.group}</span>}
-                        {provider.type === "openai" ? (
-                          <span className="px-1.5 py-0.5 rounded bg-blue-50 text-blue-600 text-xs">openai</span>
-                        ) : (
-                          <span className="px-1.5 py-0.5 rounded bg-orange-50 text-orange-600 text-xs">anthropic</span>
-                        )}
-                      </div>
-                      <div className="text-xs text-gray-400 truncate mt-0.5">{provider.baseUrl}</div>
-                    </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                      <span className="text-xs" title="Priority (lower = higher)">
-                        <span className="text-gray-400">prio</span>{" "}
-                        <span className={`font-mono ${prio !== Infinity ? "text-indigo-600 font-medium" : "text-gray-400"}`}>
-                          {prio !== Infinity ? prio : "—"}
-                        </span>
-                      </span>
-                      {pricing ? (
-                        <span className="text-xs font-mono text-gray-500" title="input / output per 1M tokens">
-                          {sym}{pricing.inputPrice ?? "—"} / {sym}{pricing.outputPrice ?? "—"}
-                        </span>
-                      ) : (
-                        <span className="text-xs text-gray-400" title="No price configured">no price</span>
-                      )}
-                      <span className={`px-1.5 py-0.5 rounded text-xs ${provider.enabled ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-500"}`}>
-                        {provider.enabled ? "active" : "off"}
-                      </span>
-                      <button onClick={() => onEdit(provider)} className="text-xs text-indigo-600 hover:underline">Edit</button>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-            {enabledCount > 1 && (
-              <div className="px-4 py-1.5 bg-gray-50/50 border-t text-xs text-gray-400 flex items-center gap-1">
-                <span className="text-green-600">① primary</span> → on failure → <span className="text-gray-500">② ③ ...</span> tried in order
+            <div className="px-4 py-4 overflow-x-auto">
+              <div className="flex items-stretch gap-0 min-w-max">
+                {/* Client node */}
+                <FlowNode label="Client" sub="request" tone="client" />
+                <FlowArrow label="route" dashed={false} />
+                {list.map((entry, idx) => {
+                  const { provider, model } = entry;
+                  const isPrimary = idx === 0 && provider.enabled;
+                  const pricing = getModelPricing(model);
+                  const prio = getModelPriority(model);
+                  const sym = (provider.currency ?? "USD") === "CNY" ? "¥" : "$";
+                  const isLast = idx === list.length - 1;
+                  return (
+                    <FlowFragment
+                      key={provider.id}
+                      idx={idx}
+                      isPrimary={isPrimary}
+                      provider={provider}
+                      prio={prio}
+                      pricing={pricing}
+                      sym={sym}
+                      enabled={provider.enabled}
+                      onEdit={() => onEdit(provider)}
+                      isLast={isLast}
+                    />
+                  );
+                })}
               </div>
-            )}
+            </div>
           </div>
         );
       })}
+    </div>
+  );
+}
+
+// A provider node plus the arrow that follows it (if not last).
+function FlowFragment({
+  idx, isPrimary, provider, prio, pricing, sym, enabled, onEdit, isLast,
+}: {
+  idx: number;
+  isPrimary: boolean;
+  provider: Provider;
+  prio: number;
+  pricing: { inputPrice?: number; outputPrice?: number } | undefined;
+  sym: string;
+  enabled: boolean;
+  onEdit: () => void;
+  isLast: boolean;
+}) {
+  return (
+    <>
+      <FlowNode
+        label={provider.name}
+        sub={provider.id}
+        tone={isPrimary ? "primary" : enabled ? "fallback" : "off"}
+        badge={
+          <>
+            <span className="text-[10px]" title="Priority">
+              <span className="text-gray-400">p</span>
+              <span className={prio !== Infinity ? "text-indigo-600 font-medium" : "text-gray-400"}>{prio !== Infinity ? prio : "—"}</span>
+            </span>
+            {pricing ? (
+              <span className="text-[10px] font-mono text-gray-500" title="input / output per 1M">
+                {sym}{pricing.inputPrice ?? "—"}/{sym}{pricing.outputPrice ?? "—"}
+              </span>
+            ) : (
+              <span className="text-[10px] text-gray-400" title="No price">no $</span>
+            )}
+          </>
+        }
+        order={idx + 1}
+        onClick={onEdit}
+      />
+      {!isLast && <FlowArrow label={enabled ? "on fail" : ""} dashed />}
+    </>
+  );
+}
+
+type FlowTone = "client" | "primary" | "fallback" | "off";
+
+function FlowNode({
+  label, sub, tone, badge, order, onClick,
+}: {
+  label: string;
+  sub?: string;
+  tone: FlowTone;
+  badge?: ReactNode;
+  order?: number;
+  onClick?: () => void;
+}) {
+  const toneStyles: Record<FlowTone, { box: string; dot: string; text: string }> = {
+    client: { box: "border-gray-300 bg-gray-50", dot: "bg-gray-500", text: "text-gray-700" },
+    primary: { box: "border-green-400 bg-green-50", dot: "bg-green-500", text: "text-green-700" },
+    fallback: { box: "border-indigo-300 bg-indigo-50/60", dot: "bg-indigo-400", text: "text-indigo-700" },
+    off: { box: "border-gray-200 bg-gray-50 opacity-50", dot: "bg-gray-300", text: "text-gray-500" },
+  };
+  const s = toneStyles[tone];
+  return (
+    <div
+      onClick={onClick}
+      className={`relative flex flex-col items-center justify-center w-32 min-h-[72px] border-2 rounded-lg px-2 py-1.5 text-center ${s.box} ${onClick ? "cursor-pointer hover:shadow-sm" : ""}`}
+    >
+      {order !== undefined && (
+        <span className="absolute -top-2 -left-2 w-5 h-5 rounded-full bg-white border border-gray-300 text-[10px] font-medium flex items-center justify-center text-gray-600">
+          {order}
+        </span>
+      )}
+      <div className="flex items-center gap-1">
+        <span className={`w-1.5 h-1.5 rounded-full ${s.dot}`} />
+        <span className={`text-xs font-medium truncate max-w-[100px] ${s.text}`} title={label}>{label}</span>
+      </div>
+      {sub && <span className="text-[10px] text-gray-400 font-mono truncate max-w-[110px]" title={sub}>{sub}</span>}
+      {badge && <div className="flex items-center gap-1.5 mt-0.5">{badge}</div>}
+    </div>
+  );
+}
+
+function FlowArrow({ label, dashed }: { label?: string; dashed?: boolean }) {
+  return (
+    <div className="flex flex-col items-center justify-center w-12 shrink-0">
+      {label ? <span className="text-[10px] text-gray-400 mb-0.5 whitespace-nowrap">{label}</span> : <span className="h-[14px]" />}
+      <div className={`h-0.5 w-full ${dashed ? "border-t-2 border-dashed border-amber-400" : "bg-gray-300"} relative`}>
+        <span className={`absolute right-0 top-1/2 -translate-y-1/2 text-xs ${dashed ? "text-amber-400" : "text-gray-400"}`}>▶</span>
+      </div>
     </div>
   );
 }
