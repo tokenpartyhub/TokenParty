@@ -62,6 +62,8 @@ export default function Providers() {
   const [editingGroup, setEditingGroup] = useState<string | null>(null);
   const [editingGroupName, setEditingGroupName] = useState("");
   const [view, setView] = useState<"providers" | "routing">("providers");
+  const [detecting, setDetecting] = useState(false);
+  const [detectMsg, setDetectMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
 
   const load = () => api.getProviders().then(setProviders).catch(console.error);
   useEffect(() => { load(); }, []);
@@ -116,6 +118,41 @@ export default function Providers() {
     const models = [...(editing?.models ?? [])];
     models.splice(index, 1);
     setEditing({ ...editing, models });
+  };
+
+  // Fetch available models from the upstream provider and merge them into the
+  // current model list. Existing model entries keep their config (price,
+  // priority); newly detected ones are appended as bare strings.
+  const detectModels = async () => {
+    if (!editing?.id) {
+      setDetectMsg({ kind: "err", text: "Save the provider first before detecting models." });
+      return;
+    }
+    setDetecting(true);
+    setDetectMsg(null);
+    try {
+      const { models: detected } = await api.detectModels(editing.id);
+      const existing = [...(editing.models ?? [])];
+      const existingIds = new Set(existing.map(getModelId));
+      const added: string[] = [];
+      for (const id of detected) {
+        if (!existingIds.has(id)) {
+          existing.push(id);
+          added.push(id);
+        }
+      }
+      setEditing({ ...editing, models: existing });
+      setDetectMsg({
+        kind: "ok",
+        text: added.length > 0
+          ? `Detected ${detected.length} model(s), added ${added.length} new: ${added.slice(0, 5).join(", ")}${added.length > 5 ? "…" : ""}`
+          : `Detected ${detected.length} model(s), all already configured.`,
+      });
+    } catch (e: any) {
+      setDetectMsg({ kind: "err", text: e.message || "Detection failed" });
+    } finally {
+      setDetecting(false);
+    }
   };
 
   const createGroup = () => {
@@ -231,7 +268,7 @@ export default function Providers() {
                   <span className={`px-2 py-0.5 rounded text-xs ${p.enabled ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-500"}`}>
                     {p.enabled ? "Active" : "Disabled"}
                   </span>
-                  <button onClick={() => { setEditing(p); setIsNew(false); }} className="text-xs text-indigo-600 hover:underline">Edit</button>
+                  <button onClick={() => { setEditing(p); setIsNew(false); setDetectMsg(null); }} className="text-xs text-indigo-600 hover:underline">Edit</button>
                   <button onClick={() => remove(p.id)} className="text-xs text-red-600 hover:underline">Delete</button>
                 </div>
               </div>
@@ -272,7 +309,7 @@ export default function Providers() {
                 </button>
               )}
               <button
-                onClick={() => { setEditing({ type: "openai", models: [], enabled: true }); setIsNew(true); }}
+                onClick={() => { setEditing({ type: "openai", models: [], enabled: true }); setIsNew(true); setDetectMsg(null); }}
                 className="px-4 py-2 bg-indigo-600 text-white rounded text-sm hover:bg-indigo-700"
               >
                 Add Provider
@@ -298,7 +335,7 @@ export default function Providers() {
       </div>
 
       {view === "routing" ? (
-        <RoutingView providers={providers} onEdit={(p) => { setEditing(p); setIsNew(false); }} />
+        <RoutingView providers={providers} onEdit={(p) => { setEditing(p); setIsNew(false); setDetectMsg(null); }} />
       ) : (
         <div className="space-y-4">
           {allGroups.map((g) => renderGroupSection(g, g, false))}
@@ -387,6 +424,14 @@ export default function Providers() {
                 <div className="flex items-center justify-between">
                   <label className="text-sm text-gray-600 font-medium">Models</label>
                   <div className="flex items-center gap-2">
+                    <button
+                      onClick={detectModels}
+                      disabled={detecting || !editing.id}
+                      title={editing.id ? "Fetch available models from the upstream /v1/models endpoint" : "Save the provider first"}
+                      className="text-xs text-indigo-600 hover:underline disabled:text-gray-400 disabled:no-underline"
+                    >
+                      {detecting ? "Detecting…" : "Detect Models"}
+                    </button>
                     <label className="text-xs text-gray-500">Currency</label>
                     <select
                       value={editing.currency ?? "USD"}
@@ -460,6 +505,11 @@ export default function Providers() {
                   })}
                   <button onClick={addModel} type="button" className="text-sm text-indigo-600 hover:underline">+ Add model</button>
                   <div className="text-xs text-gray-400">Priority: lower number = higher priority. When multiple providers serve the same model, they are ordered by priority (then price). On 429/5xx/network error, the next provider is tried automatically. Prices per 1M tokens (optional).</div>
+                  {detectMsg && (
+                    <div className={`text-xs rounded px-2 py-1.5 ${detectMsg.kind === "ok" ? "bg-green-50 text-green-700 border border-green-100" : "bg-red-50 text-red-700 border border-red-100"}`}>
+                      {detectMsg.text}
+                    </div>
+                  )}
                 </div>
               </div>
             </div>

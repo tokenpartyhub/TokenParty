@@ -81,6 +81,7 @@ export const api = {
   createProvider: (data: any) => request("/providers", { method: "POST", body: JSON.stringify(data) }),
   updateProvider: (id: string, data: any) => request(`/providers/${id}`, { method: "PUT", body: JSON.stringify(data) }),
   deleteProvider: (id: string) => request(`/providers/${id}`, { method: "DELETE" }),
+  detectModels: (id: string) => request<{ models: string[] }>(`/providers/${id}/detect-models`, { method: "POST" }),
 
   getKeys: () => request<any[]>("/keys"),
   getKeysUsageSummary: () => request<any[]>("/keys/usage-summary"),

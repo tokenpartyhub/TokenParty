@@ -135,6 +135,56 @@ apiRoutes.delete("/providers/:id", async (c) => {
   return c.json({ ok: true });
 });
 
+// Detect available models from an upstream provider by calling its models
+// endpoint. Uses the provider's real (unmasked) apiKey. Returns the list of
+// model ids; does not mutate config — the dashboard decides how to merge.
+apiRoutes.post("/providers/:id/detect-models", async (c) => {
+  const id = c.req.param("id");
+  const config = getConfig();
+  const provider = config.providers.find((p) => p.id === id);
+  if (!provider) return c.json({ error: "Provider not found" }, 404);
+
+  const keys = Array.isArray(provider.apiKey) ? provider.apiKey : [provider.apiKey];
+  const apiKey = keys[0];
+  const base = provider.baseUrl.replace(/\/$/, "");
+
+  // Pick the models endpoint path per provider type. Anthropic uses
+  // /v1/models (and some gateways /models); OpenAI uses /v1/models.
+  const path = provider.type === "anthropic" ? "/v1/models" : "/v1/models";
+  const url = `${base}${path}`;
+
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  if (provider.type === "openai") {
+    headers["authorization"] = `Bearer ${apiKey}`;
+  } else {
+    headers["x-api-key"] = apiKey;
+    headers["anthropic-version"] = "2023-06-01";
+  }
+
+  try {
+    const res = await fetch(url, { method: "GET", headers });
+    const text = await res.text();
+    if (!res.ok) {
+      return c.json({ error: `Upstream returned ${res.status}`, detail: text.slice(0, 500) }, 502);
+    }
+    let data: any;
+    try { data = JSON.parse(text); } catch {
+      return c.json({ error: "Upstream returned non-JSON response", detail: text.slice(0, 500) }, 502);
+    }
+
+    // Normalize both OpenAI ({object, data:[{id}]}) and Anthropic
+    // ({data:[{id}]}) shapes into a flat id list.
+    const list: any[] = Array.isArray(data) ? data : (data.data ?? data.models ?? []);
+    const modelIds = list
+      .map((m: any) => (typeof m === "string" ? m : m?.id))
+      .filter((id: any): id is string => typeof id === "string" && id.length > 0);
+
+    return c.json({ models: modelIds });
+  } catch (e: any) {
+    return c.json({ error: "Failed to reach upstream", detail: e.message }, 502);
+  }
+});
+
 // --- Tokens (Keys) ---
 
 apiRoutes.get("/keys", (c) => {
