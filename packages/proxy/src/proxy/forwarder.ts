@@ -10,8 +10,14 @@ import { recordRequest } from "../metrics/collector.js";
 import { extractTags } from "../tags/registry.js";
 import { createGunzip, createInflate, createBrotliDecompress, createZstdDecompress } from "node:zlib";
 import { Readable, Transform } from "node:stream";
-import { request as httpsRequest } from "node:https";
-import { request as httpRequest } from "node:http";
+import { Agent as HttpsAgent, request as httpsRequest } from "node:https";
+import { Agent as HttpAgent, request as httpRequest } from "node:http";
+
+// Shared keepAlive agents for connection pooling.
+// Without these, every outgoing request opens a new TCP connection, causing
+// TIME_WAIT accumulation and ephemeral port exhaustion under sustained load.
+const httpAgent = new HttpAgent({ keepAlive: true, maxFreeSockets: 20, keepAliveMsecs: 30_000 });
+const httpsAgent = new HttpsAgent({ keepAlive: true, maxFreeSockets: 20, keepAliveMsecs: 30_000 });
 
 export type EntryProtocol = "openai" | "anthropic";
 
@@ -433,7 +439,12 @@ function rawStreamPassthrough(params: RawStreamPassthroughParams): Promise<Attem
   const reqFn = url.protocol === "https:" ? httpsRequest : httpRequest;
 
   return new Promise((resolve) => {
-    const req = reqFn(url, { method: "POST", headers: { ...upstreamHeaders, "content-type": "application/json" } }, (res) => {
+    const keepAliveAgent = url.protocol === "https:" ? httpsAgent : httpAgent;
+    const req = reqFn(url, {
+      method: "POST",
+      headers: { ...upstreamHeaders, "content-type": "application/json" },
+      agent: keepAliveAgent,
+    }, (res) => {
       const respHeaders: Record<string, string> = {};
       for (const [key, val] of Object.entries(res.headers)) {
         if (val) respHeaders[key] = Array.isArray(val) ? val.join(", ") : val;
