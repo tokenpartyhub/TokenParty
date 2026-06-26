@@ -1,7 +1,7 @@
 {
   "name": "@zhouzhengchang/token-party",
   "version": "0.0.14",
-  "description": "AI API reverse proxy gateway with token management, protocol conversion, and built-in dashboard",
+  "description": "Self-hosted AI gateway — route, observe, and control your LLM API traffic. OpenAI ↔ Anthropic protocol translation, cost-based smart routing, per-user budgets, and a built-in dashboard. Zero dependencies.",
   "type": "module",
   "bin": {
     "tokenparty": "dist/cli.js"
@@ -17,14 +17,23 @@
     "start": "node dist/index.js"
   },
   "keywords": [
-    "ai",
-    "proxy",
-    "openai",
-    "anthropic",
-    "api-gateway",
-    "token-management"
+    "ai", "proxy", "gateway", "api-gateway", "llm", "openai", "anthropic", "claude", "gpt", 
+    "reverse-proxy", "protocol-translation", "token-management", "cost-tracking", 
+    "self-hosted", "dashboard", "budget", "routing", "sqlite"
   ],
+  "author": "Zhou Zhengchang <zhiye1@hotmail.com>",
   "license": "MIT",
+  "homepage": "https://github.com/Jasonbroker/TokenParty",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Jasonbroker/TokenParty.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Jasonbroker/TokenParty/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
     "@hono/node-server": "^1.13.0",
     "better-sqlite3": "^11.0.0",

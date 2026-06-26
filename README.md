@@ -5,7 +5,8 @@
 <h1 align="center">TokenParty</h1>
 
 <p align="center">
-  <strong>Self-hosted AI gateway — route, observe, and control your LLM API traffic.</strong>
+  <strong>Self-hosted AI gateway — route, observe, and control your LLM API traffic.</strong><br/>
+  One binary. Zero dependencies. Full dashboard. No vendor lock-in.
 </p>
 
 <p align="center">
@@ -13,7 +14,8 @@
   <a href="#quick-start">Quick Start</a> •
   <a href="#dashboard">Dashboard</a> •
   <a href="#features">Features</a> •
-  <a href="#configuration">Configuration</a>
+  <a href="#configuration">Configuration</a> •
+  <a href="./CONTRIBUTING.md">Contributing</a>
 </p>
 
 <p align="center">
@@ -23,6 +25,11 @@
   <img src="https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black" alt="React" />
   <img src="https://img.shields.io/badge/SQLite-WAL-003B57?logo=sqlite&logoColor=white" alt="SQLite" />
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License" />
+  <img src="https://img.shields.io/github/stars/Jasonbroker/TokenParty?style=social" alt="Stars" />
+</p>
+
+<p align="center">
+  <sub>One endpoint for all providers. Protocol translation between OpenAI and Anthropic. Cost-based smart routing. Per-user budgets. Full request inspector.</sub>
 </p>
 
 ---
@@ -34,6 +41,8 @@
 **Stay Simple** — One endpoint for all providers. Send OpenAI-format requests to Claude, or Anthropic-format to GPT. Protocol translation is transparent.
 
 **Keep Control** — Scoped API keys, provider-level access control, full request logging, and separate admin/user dashboards give the right view to the right person.
+
+**Zero Ops** — Single Node.js process, embedded SQLite, no Redis, no Postgres, no Docker required. Just `npx tokenparty` and you're running.
 
 ```
 ┌─────────────┐       ┌──────────────┐       ┌──────────────────┐
@@ -48,7 +57,13 @@
 
 ## Quick Start
 
-### npm
+### npx (zero install)
+
+```bash
+npx @zhouzhengchang/token-party
+```
+
+### npm global
 
 ```bash
 npm install -g @zhouzhengchang/token-party
@@ -94,7 +109,7 @@ from openai import OpenAI
 
 client = OpenAI(
     base_url="http://localhost:3456/v1",
-    api_key="tp-your-token"
+    api_key="tp-***"
 )
 
 # Routes to the cheapest provider automatically
@@ -111,7 +126,7 @@ import anthropic
 
 client = anthropic.Anthropic(
     base_url="http://localhost:3456/anthropic",
-    api_key="tp-your-token"
+    api_key="tp-***"
 )
 
 # GPT-4o through the Anthropic SDK — protocol converted transparently
@@ -134,6 +149,8 @@ message = client.messages.create(
 
 **User Portal** — Personal cost dashboard, budget progress, cache hit rate, model-level breakdown, request history.
 
+**Agent Aware** — Automatically detects Claude Code, OpenClaw, and other AI agents. Shows per-agent usage breakdown in the dashboard.
+
 ## Features
 
 | Category | Feature |
@@ -141,6 +158,7 @@ message = client.messages.create(
 | **Routing** | Cost-based smart routing across providers |
 | **Routing** | Provider fallback & automatic retry |
 | **Routing** | Multi-key load balancing (round-robin) |
+| **Routing** | Model-level priority with ordered fallback chain |
 | **Protocol** | OpenAI ↔ Anthropic bidirectional conversion |
 | **Protocol** | Full SSE streaming with protocol translation |
 | **Protocol** | OpenAI Chat, Responses, and Models API support |
@@ -155,13 +173,16 @@ message = client.messages.create(
 | **Access** | Admin authentication |
 | **Observability** | Real-time usage dashboard with charts |
 | **Observability** | Full request/response JSONL audit logs |
+| **Observability** | Route trace — see exactly how each request was routed |
 | **Observability** | Custom tags via `x-tkparty-tags` header |
 | **Observability** | Request filtering by user, provider, model, status, tags |
+| **Observability** | AI agent detection (Claude Code, OpenClaw) |
 | **Operations** | Hot-reload config (no restart needed) |
 | **Operations** | Environment variable interpolation in config |
 | **Operations** | Log storage management with auto-cleanup |
 | **Operations** | Version update check |
-| **Deployment** | npm global install — single command |
+| **Operations** | Keep-alive connection pooling |
+| **Deployment** | npm / npx — single command, zero config |
 | **Deployment** | Docker / docker-compose ready |
 | **Deployment** | Zero external dependencies (SQLite, no Redis/Postgres) |
 | **UX** | Separate admin & user portals |
@@ -221,6 +242,7 @@ TokenParty/
 │   │       ├── proxy/          # Auth, routing, forwarding
 │   │       ├── metrics/        # Usage collection → SQLite
 │   │       ├── routes/         # Admin & user API handlers
+│   │       ├── tags/           # Agent detection & tag extraction
 │   │       └── store/          # Database & log writer
 │   └── dashboard/      # React + Vite + Tailwind + Recharts
 │       └── src/
@@ -235,6 +257,13 @@ TokenParty/
 | Logs | JSONL files | Full request/response audit trail |
 | Dashboard | React 19 + Vite 6 | Admin & user monitoring UI |
 | Config | YAML + chokidar | Hot-reloadable setup |
+
+## How It Works
+
+1. **Add providers** — Configure your OpenAI, Anthropic, DeepSeek, etc. API keys in the dashboard or YAML
+2. **Create tokens** — Generate scoped API keys for your team with budgets and provider access rules
+3. **Point your apps** — Any OpenAI or Anthropic SDK, just change the `base_url`
+4. **Observe** — Watch costs, usage, and full request traces in real-time
 
 ## Roadmap
 
@@ -252,8 +281,10 @@ TokenParty/
 - [x] Provider groups & access control
 - [x] Provider fallback / retry
 - [x] Log storage management
-- [x] Multi-agent detection & per-agent detail panel (Claude Code, OpenClaw)
+- [x] AI agent detection & per-agent detail panel (Claude Code, OpenClaw)
 - [x] Model-level priority with ordered fallback chain across providers
+- [x] Route trace — visual routing diagram for each request
+- [x] Upstream model auto-discovery
 - [ ] Automatic prompt cache optimization (Anthropic cache_control injection)
 - [ ] Cost savings report ("TokenParty saved you $XX")
 - [ ] Tag-based cost analysis (cost breakdown by project/feature)
@@ -263,9 +294,27 @@ TokenParty/
 - [ ] Session tracking
 - [ ] Export billing reports (CSV/PDF)
 
+See the [full roadmap](https://github.com/Jasonbroker/TokenParty/projects) and [open issues](https://github.com/Jasonbroker/TokenParty/issues) for what's next.
+
+## Comparison
+
+| | TokenParty | LiteLLM | One API | Portkey |
+|---|---|---|---|---|
+| **Self-hosted** | ✅ | ✅ | ✅ | ❌ (SaaS) |
+| **Language** | TypeScript / Node.js | Python | Go | — |
+| **Zero dependencies** | ✅ (SQLite, no Redis/PG) | ❌ (Postgres/Redis) | ✅ | — |
+| **Protocol translation** | OpenAI ↔ Anthropic | OpenAI only | OpenAI only | OpenAI only |
+| **Built-in dashboard** | ✅ (React) | ❌ (separate) | ✅ (basic) | ✅ |
+| **Per-user budgets** | ✅ | ❌ | ✅ (basic) | ✅ |
+| **Agent detection** | ✅ | ❌ | ❌ | ❌ |
+
+## Contributing
+
+Contributions are welcome! See [CONTRIBUTING.md](./CONTRIBUTING.md) for setup and guidelines.
+
 ## License
 
-MIT
+[MIT](./LICENSE) © 2026 Zhou Zhengchang
 
 ---
 
