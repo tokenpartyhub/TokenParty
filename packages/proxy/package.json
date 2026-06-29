@@ -38,13 +38,13 @@
   ],
   "author": "Zhou Zhengchang <zhiye1@hotmail.com>",
   "license": "MIT",
-  "homepage": "https://github.com/Jasonbroker/TokenParty",
+  "homepage": "https://github.com/tokenpartyhub/TokenParty",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Jasonbroker/TokenParty.git"
+    "url": "https://github.com/tokenpartyhub/TokenParty.git"
   },
   "bugs": {
-    "url": "https://github.com/Jasonbroker/TokenParty/issues"
+    "url": "https://github.com/tokenpartyhub/TokenParty/issues"
   },
   "engines": {
     "node": ">=18"

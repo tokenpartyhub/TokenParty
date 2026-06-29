@@ -25,7 +25,7 @@
   <img src="https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black" alt="React" />
   <img src="https://img.shields.io/badge/SQLite-WAL-003B57?logo=sqlite&logoColor=white" alt="SQLite" />
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License" />
-  <img src="https://img.shields.io/github/stars/Jasonbroker/TokenParty?style=social" alt="Stars" />
+  <img src="https://img.shields.io/github/stars/tokenpartyhub/TokenParty?style=social" alt="Stars" />
 </p>
 
 <p align="center">
@@ -298,7 +298,7 @@ TokenParty/
 - [ ] Session tracking
 - [ ] Export billing reports (CSV/PDF)
 
-See the [full roadmap](https://github.com/Jasonbroker/TokenParty/projects) and [open issues](https://github.com/Jasonbroker/TokenParty/issues) for what's next.
+See the [full roadmap](https://github.com/tokenpartyhub/TokenParty/projects) and [open issues](https://github.com/tokenpartyhub/TokenParty/issues) for what's next.
 
 ## Comparison
 

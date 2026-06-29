@@ -5,7 +5,7 @@ Thanks for your interest in contributing! 🎉
 ## Getting Started
 
 ```bash
-git clone https://github.com/Jasonbroker/TokenParty.git
+git clone https://github.com/tokenpartyhub/TokenParty.git
 cd TokenParty
 pnpm install
 pnpm dev              # Start proxy on :3456
