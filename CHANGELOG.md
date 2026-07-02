@@ -4,6 +4,8 @@ All notable changes to TokenParty are documented here.
 
 ## [Unreleased]
 
+## [0.0.18] - 2026-07-02
+
 ### Fixed
 - `tokenparty restart` command entered an infinite respawn loop because
   `daemonStart` filtered the literal `"start"` from child argv but not
