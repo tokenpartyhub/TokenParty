@@ -4,6 +4,15 @@ All notable changes to TokenParty are documented here.
 
 ## [Unreleased]
 
+### Fixed
+- `recordRequest` for `request_index` used `INSERT` instead of `INSERT OR
+  REPLACE`, so the second attempt in a fallback chain (sharing the
+  same requestId as the first) raised a UNIQUE constraint error. That
+  error was caught by `attemptProvider`'s outer try/catch and converted
+  into a retryable 502, masking the successful fallback attempt.
+  Symptom: dashboard shows a single 429 entry for a request where the
+  proxy log clearly shows a fallback to another provider succeeded.
+
 ## [0.0.18] - 2026-07-02
 
 ### Fixed
