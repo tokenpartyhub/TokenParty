@@ -4,6 +4,22 @@ All notable changes to TokenParty are documented here.
 
 ## [Unreleased]
 
+## [0.0.20] - 2026-07-03
+
+### Added
+- Per-attempt request/response logging and replayable cURL in the
+  request detail page. Each upstream hop is now persisted as
+  `attempt_request` / `attempt_response` entries in the request JSONL
+  with the exact `targetUrl`, headers (including the real api key), and
+  body sent, plus the upstream status and body received. The dashboard
+  request detail page renders one card per attempt — green for the
+  hop that ultimately answered, gray for retryable failures — each
+  with a "Copy cURL" button that replays that exact attempt.
+- The previous "Client → TokenParty → upstream" one-line route trace
+  is preserved at the top; the new `Attempts` section sits below it.
+
+## [0.0.19] - 2026-07-02
+
 ### Fixed
 - `recordRequest` for `request_index` used `INSERT` instead of `INSERT OR
   REPLACE`, so the second attempt in a fallback chain (sharing the

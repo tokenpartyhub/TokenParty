@@ -405,6 +405,9 @@ export default function Requests({ mode = "admin" }: { mode?: "admin" | "user" }
             <div className="px-4 py-1 bg-red-50 text-red-700 text-xs border-b shrink-0">Error: {resLog.error}</div>
           )}
 
+          {/* Per-attempt cards (one per upstream hop, cURL replay) */}
+          <AttemptsSection logs={selected.logs ?? []} providers={providers} />
+
           {/* Content: split panes */}
           <div className="flex-1 flex min-h-0">
             {/* Request pane */}
@@ -580,6 +583,26 @@ function buildCurlUpstream(reqLog: any): string {
   return parts.join(" \\\n  ");
 }
 
+// Build a cURL command that replays a specific upstream attempt. The
+// attempt_request log entry carries the exact targetUrl, headers (incl.
+// the real api key), and body the proxy sent, so the user can copy and
+// run it to reproduce that hop standalone.
+function buildCurlAttempt(attemptReq: any): string {
+  const url = attemptReq.attemptTargetUrl ?? "";
+  const parts = ["curl -X POST", `'${url}'`];
+  if (attemptReq.headers) {
+    for (const [k, v] of Object.entries(attemptReq.headers)) {
+      // hop-by-hop + transfer concerns; keep content-type so curl sends the body
+      if (k.toLowerCase() === "content-length") continue;
+      parts.push(`-H '${k}: ${v}'`);
+    }
+  }
+  if (attemptReq.body) {
+    parts.push(`-d '${JSON.stringify(attemptReq.body)}'`);
+  }
+  return parts.join(" \\\n  ");
+}
+
 function CopyNode({ label, text, className }: { label: string; text: string; className: string }) {
   const [copied, setCopied] = useState(false);
   const [failed, setFailed] = useState(false);
@@ -651,6 +674,101 @@ function RouteTrace({ trace, providers }: { trace?: string; providers: { id: str
         );
       })}
     </span>
+  );
+}
+
+// Per-attempt detail cards. Each card is one upstream hop the proxy made.
+// Gray border for failed/retryable attempts, green for the one that
+// ultimately answered the client. Each card has a Copy cURL button that
+// replays that exact attempt.
+function AttemptsSection({ logs, providers }: { logs: any[]; providers: { id: string; name: string }[] }) {
+  const attemptReqs = logs.filter((l) => l.type === "attempt_request");
+  const attemptResps = logs.filter((l) => l.type === "attempt_response");
+  if (attemptReqs.length === 0) return null;
+
+  const nameMap = Object.fromEntries(providers.map((p) => [p.id, p.name]));
+  const finalProviderId = attemptResps.length > 0
+    ? attemptResps[attemptResps.length - 1].attemptProvider
+    : undefined;
+  const finalStatus = attemptResps.length > 0
+    ? attemptResps[attemptResps.length - 1].status
+    : undefined;
+
+  return (
+    <div className="px-5 py-3 border-t bg-gray-50 shrink-0">
+      <div className="text-xs font-semibold text-gray-600 mb-2">Attempts</div>
+      <div className="space-y-2">
+        {attemptReqs.map((reqLog) => {
+          const idx = reqLog.attemptIndex ?? 0;
+          const respLog = attemptResps.find((r) => r.attemptIndex === idx);
+          const providerName = nameMap[reqLog.attemptProvider] ?? reqLog.attemptProvider;
+          const isFinal = reqLog.attemptProvider === finalProviderId && respLog?.status === finalStatus;
+          const isSuccess = isFinal && respLog && (respLog.status ?? 0) >= 200 && (respLog.status ?? 0) < 300;
+          const borderClass = isSuccess
+            ? "border-green-300 bg-green-50"
+            : "border-gray-300 bg-gray-50";
+          const statusBadge = respLog?.status
+            ? (respLog.status >= 200 && respLog.status < 300
+                ? "bg-green-100 text-green-700"
+                : "bg-red-100 text-red-700")
+            : "bg-gray-200 text-gray-700";
+          const reason = respLog?.error
+            ? (respLog.error.includes("ECONN") || respLog.error.includes("fetch failed") ? "network_error" : "error")
+            : respLog?.status === 429 ? "rate_limited" : respLog?.status && respLog.status >= 500 ? "http_5xx" : undefined;
+
+          return (
+            <div key={idx} className={`border rounded ${borderClass}`}>
+              <div className="flex items-center gap-2 px-3 py-2">
+                <span className="text-xs text-gray-400 font-mono w-6">#{idx + 1}</span>
+                <span className="text-sm font-medium text-gray-700">{providerName}</span>
+                {respLog?.status ? (
+                  <span className={`text-xs px-1.5 py-0.5 rounded ${statusBadge}`}>{respLog.status}</span>
+                ) : (
+                  <span className={`text-xs px-1.5 py-0.5 rounded ${statusBadge}`}>err</span>
+                )}
+                {reason && <span className="text-xs text-red-500">({reason})</span>}
+                {isSuccess && <span className="text-xs text-green-600 font-medium">✓ final</span>}
+                {respLog?.error && <span className="text-xs text-red-600 font-mono truncate">{respLog.error}</span>}
+                <span className="ml-auto">
+                  <CopyNode
+                    label="Copy cURL"
+                    text={buildCurlAttempt(reqLog)}
+                    className="bg-white border-gray-300 text-gray-700 hover:bg-gray-100"
+                  />
+                </span>
+              </div>
+              <details className="border-t border-gray-200">
+                <summary className="px-3 py-1.5 text-xs text-gray-500 cursor-pointer hover:bg-white/50">
+                  Show request & response details
+                </summary>
+                <div className="px-3 py-2 space-y-2 text-xs">
+                  <div>
+                    <div className="text-gray-500 font-semibold mb-1">→ Sent to {reqLog.attemptTargetUrl}</div>
+                    <div className="bg-white border border-gray-200 rounded p-2 font-mono text-[11px] max-h-40 overflow-auto">
+                      {reqLog.headers && Object.entries(reqLog.headers).map(([k, v]) => (
+                        <div key={k}><span className="text-gray-400">{k}:</span> {String(v)}</div>
+                      ))}
+                      {reqLog.body && <pre className="mt-1 text-gray-700 whitespace-pre-wrap break-all">{JSON.stringify(reqLog.body, null, 2)}</pre>}
+                    </div>
+                  </div>
+                  {respLog && (
+                    <div>
+                      <div className="text-gray-500 font-semibold mb-1">← Response {respLog.status ?? "err"}{respLog.error ? ` (${respLog.error})` : ""}</div>
+                      <div className="bg-white border border-gray-200 rounded p-2 font-mono text-[11px] max-h-40 overflow-auto">
+                        {respLog.headers && Object.entries(respLog.headers).map(([k, v]) => (
+                          <div key={k}><span className="text-gray-400">{k}:</span> {String(v)}</div>
+                        ))}
+                        {respLog.body && <pre className="mt-1 text-gray-700 whitespace-pre-wrap break-all">{typeof respLog.body === "string" ? respLog.body : JSON.stringify(respLog.body, null, 2)}</pre>}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </details>
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 

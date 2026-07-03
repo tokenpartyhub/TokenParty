@@ -115,6 +115,18 @@ export async function forwardRequest(
       ? { ...body, stream_options: { include_usage: true } }
       : body;
 
+    // Record exactly what we are about to send upstream so the request
+    // detail page can replay this hop as a cURL command.
+    writeLog(requestId, {
+      type: "attempt_request",
+      timestamp: Date.now(),
+      attemptIndex: i,
+      attemptProvider: provider.id,
+      attemptTargetUrl: targetUrl,
+      headers: upstreamHeaders,
+      body: attemptBody,
+    });
+
     const attemptResult = await attemptProvider({
       provider,
       targetUrl,
@@ -134,6 +146,7 @@ export async function forwardRequest(
       customTags,
       routeTrace,
       model,
+      attemptIndex: i,
     });
 
     if (attemptResult.kind === "done") {
@@ -174,6 +187,12 @@ export async function forwardRequest(
   }
 
   // All candidates exhausted - return last retryable error as 502
+  writeLog(requestId, {
+    type: "response",
+    timestamp: Date.now(),
+    status: 502,
+    error: "All provider candidates failed",
+  });
   return c.json({ error: "All provider candidates failed" }, 502);
 }
 
@@ -196,13 +215,14 @@ interface AttemptParams {
   customTags: string;
   routeTrace: RouteTraceEntry[];
   model: string;
+  attemptIndex: number;
 }
 
 async function attemptProvider(params: AttemptParams): Promise<AttemptResult> {
   const {
     provider, targetUrl, upstreamHeaders, attemptBody, isStreaming, needsStreamConversion,
     entry, c, requestId, startTime, token, logFile, apiKeyIndex, providerPricing,
-    agent, customTags, routeTrace, model,
+    agent, customTags, routeTrace, model, attemptIndex,
   } = params;
 
   try {
@@ -211,7 +231,7 @@ async function attemptProvider(params: AttemptParams): Promise<AttemptResult> {
       const streamResult = await rawStreamPassthrough({
         c, targetUrl, upstreamHeaders, body: attemptBody, requestId, provider,
         model, token, startTime, logFile, apiKeyIndex, pricing: providerPricing,
-        agent, customTags, routeTrace,
+        agent, customTags, routeTrace, attemptIndex,
       });
 
       if (streamResult.kind === "retryable") {
@@ -231,7 +251,17 @@ async function attemptProvider(params: AttemptParams): Promise<AttemptResult> {
 
     // Check if retryable BEFORE reading/piping body
     if (isRetryableStatus(response.status)) {
-      // Drain response to free connection
+      // Drain response to free connection, but capture enough for the log
+      // so the detail page can show why this provider was skipped.
+      const errorText = await response.text().catch(() => "");
+      writeLog(requestId, {
+        type: "attempt_response",
+        timestamp: Date.now(),
+        attemptIndex,
+        attemptProvider: provider.id,
+        status: response.status,
+        body: errorText.slice(0, 8000),
+      });
       await response.body?.cancel();
       return { kind: "retryable", status: response.status };
     }
@@ -330,8 +360,10 @@ async function attemptProvider(params: AttemptParams): Promise<AttemptResult> {
               }
             }
             writeLog(requestId, {
-              type: "response",
+              type: "attempt_response",
               timestamp: Date.now(),
+              attemptIndex,
+              attemptProvider: provider.id,
               headers: respHeaders,
               streaming: true,
               streamContent: fullContent,
@@ -369,8 +401,10 @@ async function attemptProvider(params: AttemptParams): Promise<AttemptResult> {
     const usage = extractUsage(responseBody, provider.type);
 
     writeLog(requestId, {
-      type: "response",
+      type: "attempt_response",
       timestamp: Date.now(),
+      attemptIndex,
+      attemptProvider: provider.id,
       headers: respHeaders,
       body: responseBody,
       usage,
@@ -402,8 +436,10 @@ async function attemptProvider(params: AttemptParams): Promise<AttemptResult> {
   } catch (error: any) {
     const latencyMs = Date.now() - startTime;
     writeLog(requestId, {
-      type: "response",
+      type: "attempt_response",
       timestamp: Date.now(),
+      attemptIndex,
+      attemptProvider: provider.id,
       error: error.message,
     });
 
@@ -427,12 +463,13 @@ interface RawStreamPassthroughParams {
   agent?: string;
   customTags?: string;
   routeTrace?: RouteTraceEntry[];
+  attemptIndex: number;
 }
 
 function rawStreamPassthrough(params: RawStreamPassthroughParams): Promise<AttemptResult> {
   const {
     targetUrl, upstreamHeaders, body, requestId, provider, model, token,
-    startTime, logFile, apiKeyIndex, pricing, agent, customTags, routeTrace,
+    startTime, logFile, apiKeyIndex, pricing, agent, customTags, routeTrace, attemptIndex,
   } = params;
 
   const url = new URL(targetUrl);
@@ -454,6 +491,16 @@ function rawStreamPassthrough(params: RawStreamPassthroughParams): Promise<Attem
       // Check if retryable BEFORE piping - destroy stream and return retryable
       if (isRetryableStatus(status)) {
         res.destroy();
+        // Capture any error body that the upstream emitted before the status
+        // line. The stream is destroyed, so the body is whatever was buffered
+        // at this point — empty in most cases.
+        writeLog(requestId, {
+          type: "attempt_response",
+          timestamp: Date.now(),
+          attemptIndex,
+          attemptProvider: provider.id,
+          status,
+        });
         resolve({ kind: "retryable", status });
         return;
       }
@@ -475,7 +522,7 @@ function rawStreamPassthrough(params: RawStreamPassthroughParams): Promise<Attem
           callback(null, chunk);
         },
         flush(callback) {
-          asyncParseBufferForLog(rawChunks, res.headers["content-encoding"] as string | undefined, requestId, respHeaders, provider, model, token, startTime, logFile, apiKeyIndex, pricing, agent, customTags, routeTrace, status);
+          asyncParseBufferForLog(rawChunks, res.headers["content-encoding"] as string | undefined, requestId, respHeaders, provider, model, token, startTime, logFile, apiKeyIndex, pricing, agent, customTags, routeTrace, status, attemptIndex);
           callback();
         },
       });
@@ -485,6 +532,13 @@ function rawStreamPassthrough(params: RawStreamPassthroughParams): Promise<Attem
     });
 
     req.on("error", (error) => {
+      writeLog(requestId, {
+        type: "attempt_response",
+        timestamp: Date.now(),
+        attemptIndex,
+        attemptProvider: provider.id,
+        error: error.message,
+      });
       resolve({ kind: "retryable", status: 502, error: error.message });
     });
     req.write(JSON.stringify(body));
@@ -508,6 +562,7 @@ function asyncParseBufferForLog(
   customTags?: string,
   routeTrace?: RouteTraceEntry[],
   upstreamStatus?: number,
+  attemptIndex?: number,
 ) {
   (async () => {
     let text: string;
@@ -582,8 +637,10 @@ function asyncParseBufferForLog(
     }
 
     writeLog(requestId, {
-      type: "response",
+      type: "attempt_response",
       timestamp: Date.now(),
+      attemptIndex,
+      attemptProvider: provider.id,
       headers: respHeaders,
       streaming: isSse,
       streamContent: isSse ? fullContent : undefined,

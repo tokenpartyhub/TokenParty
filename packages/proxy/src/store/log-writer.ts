@@ -4,8 +4,12 @@ import { getConfig } from "../config.js";
 import { getDb, getSetting } from "./db.js";
 
 export interface LogEntry {
-  type: "request" | "response";
+  type: "request" | "response" | "attempt_request" | "attempt_response";
   timestamp: number;
+  // Per-attempt metadata — present on attempt_request / attempt_response.
+  attemptIndex?: number;
+  attemptProvider?: string;
+  attemptTargetUrl?: string;
   headers?: Record<string, string>;
   body?: unknown;
   streaming?: boolean;
