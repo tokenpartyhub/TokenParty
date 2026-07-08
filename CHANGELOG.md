@@ -4,6 +4,18 @@ All notable changes to TokenParty are documented here.
 
 ## [Unreleased]
 
+### Fixed
+- Dashboard request detail page Response panel went blank after 0.0.20.
+  The forwarder renamed its single outbound log entry from `response`
+  to per-attempt `attempt_response` entries, but the detail panel
+  derived `resLog` from `type === "response"` only — so for
+  successful requests the lookup returned undefined and the whole
+  Response tab (headers/content/SSE events/raw, error banner, agent
+  adapter sections) disappeared. Derive `resLog` as: prefer the
+  last `type: "response"` entry (old logs / "all candidates failed"
+  502) or fall back to the last `attempt_response` entry (per-hop
+  upstream response in 0.0.20+).
+
 ## [0.0.20] - 2026-07-03
 
 ### Added

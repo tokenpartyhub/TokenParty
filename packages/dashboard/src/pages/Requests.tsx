@@ -166,7 +166,16 @@ export default function Requests({ mode = "admin" }: { mode?: "admin" | "user" }
   };
 
   const reqLog = selected?.logs?.find((l: any) => l.type === "request");
-  const resLog = selected?.logs?.find((l: any) => l.type === "response");
+  // After 0.0.20 the upstream hop is recorded as attempt_response instead of
+  // a single response. For successful requests there is no "response"
+  // entry, so fall back to the last attempt_response (which carries the
+  // final upstream status, body, and headers).
+  const resLog = (() => {
+    const all = selected?.logs ?? [];
+    const generic = all.filter((l: any) => l.type === "response").slice(-1)[0];
+    if (generic) return generic;
+    return all.filter((l: any) => l.type === "attempt_response").slice(-1)[0];
+  })();
   const adapter = selected ? getAdapterForAgent(selected.agent) : null;
   const adapterCtx: RequestContext | null = selected ? {
     cost: selected.cost ?? 0,
