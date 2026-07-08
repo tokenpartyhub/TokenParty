@@ -4,6 +4,20 @@ All notable changes to TokenParty are documented here.
 
 ## [Unreleased]
 
+## [0.0.23] - 2026-07-08
+
+### Fixed
+- Dashboard Model Routing view no longer suggests cross-protocol
+  fallback that cannot actually happen. After 0.0.22, same model
+  across different provider types has independent fallback chains
+  (one per entry protocol), so the view now groups by
+  `(modelId, protocol)`. Each row shows the protocol, model id,
+  and matching entry endpoint path. Models with both
+  type=anthropic and type=openai providers render as two
+  distinct rows instead of one misleading chain.
+- The "model routing" page header note now explains the protocol
+  scoping instead of implying protocol-agnostic fallback.
+
 ## [0.0.22] - 2026-07-08
 
 ### ⚠️ BREAKING CHANGES
