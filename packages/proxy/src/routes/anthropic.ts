@@ -2,7 +2,6 @@ import { Hono, type Context } from "hono";
 import { authMiddleware } from "../proxy/auth.js";
 import { forwardRequest } from "../proxy/forwarder.js";
 import { resolveProvider, listAvailableModels } from "../proxy/router.js";
-import { anthropicToOpenai } from "../adapters/anthropic-to-openai.js";
 import type { AppEnv } from "../types/env.js";
 
 export const anthropicRoutes = new Hono<AppEnv>();
@@ -29,6 +28,9 @@ const handleAnthropicModels = (c: Context<AppEnv>) => {
 anthropicRoutes.get("/v1/models", handleAnthropicModels);
 anthropicRoutes.get("/models", handleAnthropicModels);
 
+// Anthropic Messages API. Only type=anthropic upstream providers are
+// allowed — cross-protocol fallback to OpenAI upstream is no longer
+// supported.
 anthropicRoutes.post("/v1/messages", async (c) => {
   const token = c.get("authToken");
   const body = await c.req.json();
@@ -38,35 +40,10 @@ anthropicRoutes.post("/v1/messages", async (c) => {
   if ("error" in result) {
     return c.json({ error: result.error }, 400);
   }
-
-  const { providers } = result;
-
-  if (providers[0].type === "anthropic") {
-    return forwardRequest(c, providers, "/v1/messages", body, "anthropic");
-  }
-
-  const openaiBody = anthropicToOpenai(body);
-  return forwardRequest(c, providers, "/chat/completions", openaiBody, "anthropic");
-});
-
-anthropicRoutes.all("/*", async (c) => {
-  const token = c.get("authToken");
-  const body = await c.req.json().catch(() => ({}));
-  const model = body.model ?? "";
-
-  if (!model) {
-    return c.json({ error: "Not found" }, 404);
-  }
-
-  const result = resolveProvider(model, token);
-  if ("error" in result) {
-    return c.json({ error: result.error }, 400);
-  }
-
   if (result.providers[0].type !== "anthropic") {
-    return c.json({ error: "This endpoint requires an Anthropic-compatible provider" }, 400);
+    return c.json({
+      error: `Provider '${result.providers[0].id}' is ${result.providers[0].type}-only. Use the /v1 endpoint for OpenAI-format providers.`,
+    }, 400);
   }
-
-  const path = new URL(c.req.url).pathname.replace(/^\/anthropic/, "");
-  return forwardRequest(c, result.providers, path, body, "anthropic");
+  return forwardRequest(c, result.providers, "/v1/messages", body);
 });

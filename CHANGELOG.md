@@ -4,6 +4,41 @@ All notable changes to TokenParty are documented here.
 
 ## [Unreleased]
 
+## [0.0.22] - 2026-07-08
+
+### ⚠️ BREAKING CHANGES
+
+- Cross-protocol routing is **no longer supported**. The proxy no
+  longer converts between Anthropic and OpenAI wire formats. Each
+  entry endpoint only forwards to upstream providers that match its
+  protocol:
+    `/v1/chat/completions`, `/v1/responses`, `/v1/models`  → type=openai providers only
+    `/anthropic/v1/messages`, `/anthropic/v1/models`        → type=anthropic providers only
+
+### Removed
+- `POST /v1/messages` route (was the OpenAI-format sibling of
+  `/anthropic/v1/messages`; cross-protocol auto-detect).
+- `POST /anthropic/messages` and `POST /anthropic/chat/completions`
+  routes (cross-protocol aliases).
+- `packages/proxy/src/adapters/` directory
+  (`anthropic-to-openai.ts`, `openai-to-anthropic.ts`) and the
+  in-line `OpenaiToAnthropicStreamConverter` + `convertAnthropicChunkToOpenai`
+  helpers in `forwarder.ts`. Path-conversion bugs (e.g. fallback
+  producing `/v1/v1/messages`) are no longer possible because
+  cross-protocol itself is gone.
+- Model-name auto-detection in route handlers: `claude-*` / `gpt-*`
+  sniffing that inferred protocol from the body shape. Use the
+  matching-protocol entry endpoint instead.
+- `forwardRequest`'s `entryProtocol` parameter and the
+  `needsStreamConversion` parameter on `attemptProvider`.
+
+### Preserved
+- Same-protocol multi-provider fallback chain (priority order,
+  retry on 429/5xx/network error). `forwardRequest` still iterates
+  candidate providers per call.
+- Per-attempt request/response logs, TTFT/duration tracking,
+  time-range row display, all per-hop "Copy cURL" buttons.
+
 ## [0.0.21] - 2026-07-08
 
 ### Added

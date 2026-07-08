@@ -528,24 +528,28 @@ export default function Providers() {
   );
 }
 
-// Model-centric routing view: groups providers by model id and shows the
-// ordered fallback chain (priority asc, then price asc) exactly as the router
-// resolves it. Lets users see at a glance which providers serve a model, in
-// what order, and what happens on failure.
+// Model-centric routing view: groups providers by (model id, protocol)
+// since 0.0.22 the proxy no longer auto-converts between Anthropic
+// and OpenAI wire formats. Each entry endpoint only reaches providers
+// that match its protocol, so a model with both `type=anthropic` and
+// `type=openai` providers has TWO independent fallback chains — one
+// per entry endpoint. Showing them in one chain would imply a
+// fallback that can no longer happen.
 function RoutingView({ providers, onEdit }: { providers: Provider[]; onEdit: (p: Provider) => void }) {
-  // Aggregate: model id -> list of { provider, modelConfig }
-  const byModel = new Map<string, { provider: Provider; model: ModelConfig }[]>();
+  // Aggregate: (modelId, type) -> list of { provider, modelConfig }
+  const byChain = new Map<string, { provider: Provider; model: ModelConfig; type: string }[]>();
   for (const p of providers) {
     for (const m of p.models ?? []) {
       const id = getModelId(m);
       if (!id) continue;
-      if (!byModel.has(id)) byModel.set(id, []);
-      byModel.get(id)!.push({ provider: p, model: m });
+      const key = `${p.type}::${id}`;
+      if (!byChain.has(key)) byChain.set(key, []);
+      byChain.get(key)!.push({ provider: p, model: m, type: p.type });
     }
   }
 
-  // Sort each model's candidates the same way router.ts does
-  for (const list of byModel.values()) {
+  // Sort each chain's candidates the same way router.ts does
+  for (const list of byChain.values()) {
     list.sort((a, b) => {
       const prioDiff = getModelPriority(a.model) - getModelPriority(b.model);
       if (prioDiff !== 0) return prioDiff;
@@ -553,35 +557,47 @@ function RoutingView({ providers, onEdit }: { providers: Provider[]; onEdit: (p:
     });
   }
 
-  // Models with more (enabled) providers first — those are the ones with real
-  // fallback chains worth attention.
-  const modelEntries = [...byModel.entries()].sort((a, b) => {
+  // Chains with more (enabled) providers first — those are the ones with
+  // real fallback chains worth attention.
+  const chainEntries = [...byChain.entries()].sort((a, b) => {
     const ae = a[1].filter((x) => x.provider.enabled).length;
     const be = b[1].filter((x) => x.provider.enabled).length;
     if (be !== ae) return be - ae;
     return a[0].localeCompare(b[0]);
   });
 
-  if (modelEntries.length === 0) {
+  if (chainEntries.length === 0) {
     return <div className="text-sm text-gray-400 text-center py-12">No models configured.</div>;
   }
 
   return (
     <div className="space-y-3">
       <div className="text-xs text-gray-500 bg-indigo-50 border border-indigo-100 rounded px-3 py-2">
-        Each model shows its provider fallback chain in routing order (priority asc, then price asc). Solid arrow = primary path; dashed arrow = tried on <b>429 / 5xx / network error</b>. Disabled providers are dimmed.
+        Each row is one <b>(model, entry protocol)</b> pair. Same model across anthropic and openai
+        providers is shown as two rows because cross-protocol fallback is no longer supported —
+        an <code>/anthropic</code> request can only hit anthropic-type providers.
+        Solid arrow = primary path; dashed arrow = tried on <b>429 / 5xx / network error</b>.
+        Disabled providers are dimmed.
       </div>
-      {modelEntries.map(([modelId, list]) => {
+      {chainEntries.map(([key, list]) => {
+        const [type, modelId] = key.split("::");
+        const entry = type === "anthropic" ? "/anthropic/v1/messages" : "/v1/chat/completions";
         const enabledCount = list.filter((x) => x.provider.enabled).length;
         return (
-          <div key={modelId} className="border rounded-lg bg-white overflow-hidden">
+          <div key={key} className="border rounded-lg bg-white overflow-hidden">
             <div className="flex items-center gap-2 px-4 py-2.5 bg-gray-50 border-b">
+              <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${
+                type === "anthropic"
+                  ? "bg-indigo-100 text-indigo-700 border border-indigo-200"
+                  : "bg-emerald-100 text-emerald-700 border border-emerald-200"
+              }`}>{type}</span>
               <span className="font-mono font-semibold text-sm">{modelId}</span>
               <span className="text-xs text-gray-400">·</span>
               <span className="text-xs text-gray-500">
                 {enabledCount} provider{enabledCount !== 1 ? "s" : ""}
                 {enabledCount > 1 && <span className="ml-1 text-indigo-600">→ fallback chain</span>}
               </span>
+              <span className="text-xs text-gray-400 ml-auto font-mono">{entry}</span>
             </div>
             <div className="px-4 py-4 overflow-x-auto">
               <div className="flex items-stretch gap-0 min-w-max">
