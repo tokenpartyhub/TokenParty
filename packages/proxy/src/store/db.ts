@@ -48,6 +48,7 @@ function runMigrations(db: Database.Database) {
       cache_read_tokens INTEGER DEFAULT 0,
       cache_write_tokens INTEGER DEFAULT 0,
       latency_ms INTEGER,
+      ttft_ms INTEGER DEFAULT 0,
       status INTEGER,
       log_file TEXT NOT NULL,
       error TEXT,
@@ -102,6 +103,11 @@ function runMigrations(db: Database.Database) {
   }
   if (!colNames.has("route_trace")) {
     db.exec(`ALTER TABLE request_index ADD COLUMN route_trace TEXT DEFAULT ''`);
+  }
+  if (!colNames.has("ttft_ms")) {
+    // Time To First Token — wait from request entry to first byte from
+    // upstream. Distinct from latency_ms (total wall-clock duration).
+    db.exec(`ALTER TABLE request_index ADD COLUMN ttft_ms INTEGER DEFAULT 0`);
   }
 
   const dailyCols = db.prepare(`PRAGMA table_info(usage_daily)`).all() as { name: string }[];

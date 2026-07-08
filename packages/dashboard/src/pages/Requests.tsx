@@ -5,6 +5,56 @@ import { formatCost, getSettings } from "./Settings";
 import { getAdapterForAgent } from "../lib/agent-adapters";
 import type { RequestContext } from "../lib/agent-adapters/types";
 
+// Format a duration in milliseconds as a short human-readable string
+// (e.g. "0.3s", "33.9s", "2m15s"). Sub-second values keep one decimal;
+// seconds and above use one decimal too for consistent column width.
+function formatDuration(ms: number): string {
+  if (!ms || ms < 0) return "—";
+  if (ms < 1000) return `${ms}ms`;
+  const totalSec = ms / 1000;
+  if (totalSec < 60) return `${totalSec.toFixed(1)}s`;
+  const minutes = Math.floor(totalSec / 60);
+  const secs = Math.round(totalSec % 60);
+  return `${minutes}m${secs}s`;
+}
+
+// 24-hour time formatter. User-configurable later (12/24h, locale, etc).
+const TIME_FMT = new Intl.DateTimeFormat("en-GB", {
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hour12: false,
+});
+const fmtTime = (d: Date) => TIME_FMT.format(d);
+
+// Format a time range, dropping year/month/day when start and end share them:
+//   same day         → "16:36:04-16:36:20"
+//   same month/year  → "Jul 8, 16:36:04 - Jul 9, 16:36:20"
+//   same year        → "Jul 8, 16:36:04 - Aug 9, 16:36:20"
+//   cross year       → "Dec 31 2025, 16:36:04 - Jan 1 2026, 16:36:20"
+function formatTimeRange(startMs: number, endMs: number): string {
+  if (!startMs) return "—";
+  const start = new Date(startMs);
+  const end = new Date(endMs || startMs);
+
+  const sameY = start.getFullYear() === end.getFullYear();
+  const sameM = sameY && start.getMonth() === end.getMonth();
+  const sameD = sameM && start.getDate() === end.getDate();
+
+  if (sameD) return `${fmtTime(start)}-${fmtTime(end)}`;
+
+  const MMM = new Intl.DateTimeFormat("en-US", { month: "short" });
+  const dayFmt = new Intl.DateTimeFormat("en-US", { day: "numeric" });
+  const yearMonthDay = new Intl.DateTimeFormat("en-US", { year: "numeric", month: "short", day: "numeric" });
+
+  const stampStart = (d: Date) =>
+    sameY ? `${MMM.format(d)} ${dayFmt.format(d)}, ${fmtTime(d)}` : `${yearMonthDay.format(d)}, ${fmtTime(d)}`;
+  const stampEnd = (d: Date) =>
+    sameM ? `${fmtTime(d)}` : stampStart(d);
+
+  return `${stampStart(start)} - ${stampEnd(end)}`;
+}
+
 interface Filters {
   token_id: string;
   provider_id: string;
@@ -286,11 +336,12 @@ export default function Requests({ mode = "admin" }: { mode?: "admin" | "user" }
             <thead className="bg-gray-50">
               <tr>
                 <th className="px-3 py-2 text-left">Time</th>
+                <th className="px-3 py-2 text-right" title="Total request duration (includes streaming time). For non-streaming this equals TTFT.">Duration</th>
+                <th className="px-3 py-2 text-right" title="Time To First Token — time from request entry to first byte from upstream. The real latency.">TTFT</th>
                 <th className="px-3 py-2 text-left">User</th>
                 <th className="px-3 py-2 text-left">Model</th>
                 <th className="px-3 py-2 text-right">Tokens</th>
                 <th className="px-3 py-2 text-right">Cost</th>
-                <th className="px-3 py-2 text-right">Latency</th>
                 <th className="px-3 py-2 text-center">Status</th>
                 <th className="px-3 py-2 text-left">Agent</th>
                 <th className="px-3 py-2 text-left">Tags</th>
@@ -304,12 +355,19 @@ export default function Requests({ mode = "admin" }: { mode?: "admin" | "user" }
                   onClick={() => setSelectedId(req.id)}
                   className={`border-t cursor-pointer hover:bg-gray-50 ${selected?.id === req.id ? "bg-indigo-50" : ""}`}
                 >
-                  <td className="px-3 py-2 whitespace-nowrap">{new Date(req.timestamp).toLocaleString()}</td>
-                  <td className="px-3 py-2 text-xs">{keyNames[req.token_id] || req.token_id?.slice(0, 12)}</td>
+                  <td className="px-3 py-2 whitespace-nowrap" title={new Date(req.timestamp).toLocaleString()}>
+                    {formatTimeRange(req.timestamp, req.timestamp + (req.latency_ms ?? 0))}
+                  </td>
+                  <td className="px-3 py-2 text-right" title={`${req.latency_ms ?? 0}ms`}>
+                    {formatDuration(req.latency_ms)}
+                  </td>
+                  <td className="px-3 py-2 text-right" title={`${req.ttft_ms ?? 0}ms`}>
+                    {req.ttft_ms > 0 ? formatDuration(req.ttft_ms) : "—"}
+                  </td>
+                  <td className="px-3 py-2">{keyNames[req.token_id] || req.token_id?.slice(0, 12)}</td>
                   <td className="px-3 py-2">{req.model}</td>
                   <td className="px-3 py-2 text-right">{(req.input_tokens ?? 0) + (req.output_tokens ?? 0)}</td>
-                  <td className="px-3 py-2 text-right text-xs">{req.cost > 0 ? formatCost(req.cost) : "-"}</td>
-                  <td className="px-3 py-2 text-right">{req.latency_ms}ms</td>
+                  <td className="px-3 py-2 text-right">{req.cost > 0 ? formatCost(req.cost) : "-"}</td>
                   <td className="px-3 py-2 text-center">
                     <span className={`px-2 py-0.5 rounded text-xs ${req.status === 200 ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"}`}>
                       {req.status}
@@ -374,6 +432,9 @@ export default function Requests({ mode = "admin" }: { mode?: "admin" | "user" }
             <div className="flex items-center justify-between">
               <div className="flex items-baseline gap-3 min-w-0">
                 <h3 className="font-bold text-base shrink-0">Detail</h3>
+                <span className="text-xs text-gray-400 truncate">
+                  {formatTimeRange(selected.timestamp, selected.timestamp + (selected.latency_ms ?? 0))}
+                </span>
                 <span className="text-xs text-gray-400 font-mono truncate">{selected.id}</span>
               </div>
               <button onClick={() => setSelected(null)} className="text-gray-400 hover:text-gray-600 ml-3 shrink-0">
@@ -384,7 +445,18 @@ export default function Requests({ mode = "admin" }: { mode?: "admin" | "user" }
             <div className="flex flex-wrap items-center gap-2 text-xs">
               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-white border border-gray-200"><span className="text-gray-400">Model</span> <span className="font-medium">{selected.model}</span></span>
               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-white border border-gray-200"><span className="text-gray-400">Provider</span> {providers.find((p) => p.id === selected.provider_id)?.name ?? selected.provider_id}</span>
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-white border border-gray-200"><span className="text-gray-400">Latency</span> {selected.latency_ms}ms</span>
+              <span
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-white border border-gray-200"
+                title={`Duration: ${selected.latency_ms ?? 0}ms total wall-clock`}
+              >
+                <span className="text-gray-400">Duration</span> {formatDuration(selected.latency_ms ?? 0)}
+              </span>
+              <span
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-white border border-gray-200"
+                title={`Time to first token: ${selected.ttft_ms ?? 0}ms — actual upstream latency`}
+              >
+                <span className="text-gray-400">TTFT</span> {selected.ttft_ms > 0 ? formatDuration(selected.ttft_ms) : "—"}
+              </span>
               <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full border ${selected.status === 200 ? "bg-green-50 border-green-200 text-green-700" : "bg-red-50 border-red-200 text-red-700"}`}><span className="text-gray-400">Status</span> {selected.status}</span>
               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-white border border-gray-200"><span className="text-gray-400">Entry</span> {reqLog?.headers?.["x-entry-protocol"] ?? "-"}</span>
               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-white border border-gray-200"><span className="text-gray-400">Cost</span> {selected.cost > 0 ? formatCost(selected.cost) : "-"}</span>

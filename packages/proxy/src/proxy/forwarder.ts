@@ -41,8 +41,8 @@ export type RouteTraceEntry = { provider: string; status: number | null; latency
 
 // Attempt result discriminated union for the candidate chain loop
 type AttemptResult =
-  | { kind: "done"; response: Response }
-  | { kind: "retryable"; status: number; error?: string };
+  | { kind: "done"; response: Response; ttftMs: number }
+  | { kind: "retryable"; status: number; error?: string; ttftMs: number };
 
 function isRetryableStatus(status: number): boolean {
   return status === 429 || status >= 500;
@@ -170,6 +170,7 @@ export async function forwardRequest(
       cacheReadTokens: 0,
       cacheWriteTokens: 0,
       latencyMs,
+      ttftMs: attemptResult.ttftMs,
       status: attemptResult.status,
       logFile,
       error: attemptResult.error,
@@ -179,6 +180,7 @@ export async function forwardRequest(
       agent,
       customTags,
       routeTrace,
+      startTime,
     });
 
     if (i < candidateProviders.length - 1) {
@@ -239,7 +241,7 @@ async function attemptProvider(params: AttemptParams): Promise<AttemptResult> {
       }
 
       routeTrace.push({ provider: provider.id, status: 200, latencyMs: 0 });
-      return { kind: "done", response: streamResult.response };
+      return { kind: "done", response: streamResult.response, ttftMs: streamResult.ttftMs };
     }
 
     // Fetch path: non-streaming + cross-protocol streaming
@@ -263,8 +265,15 @@ async function attemptProvider(params: AttemptParams): Promise<AttemptResult> {
         body: errorText.slice(0, 8000),
       });
       await response.body?.cancel();
-      return { kind: "retryable", status: response.status };
+      return { kind: "retryable", status: response.status, ttftMs: Date.now() - startTime };
     }
+
+    // Headers received — that's our first signal from upstream. TTFT for
+    // the fetch path = time from request start to headers in. For
+    // non-streaming this is essentially the full RTT (we read body right
+    // after); for streaming this is the genuine "latency" before any
+    // chunk arrives.
+    const ttftMs = Date.now() - startTime;
 
     const respHeaders = headersToRecord(response.headers);
     const latencyMs = Date.now() - startTime;
@@ -275,8 +284,14 @@ async function attemptProvider(params: AttemptParams): Promise<AttemptResult> {
       c.header("Cache-Control", "no-cache");
       c.header("Connection", "keep-alive");
 
+      // Override TTFT: for streaming the user-perceived latency is the
+      // first body chunk, not the headers. Will be set inside the
+      // streamSSE body on the first non-empty reader.read().
+      let streamTtftMs = ttftMs;
+
       return {
         kind: "done",
+        ttftMs, // captured at headers; recordRequest finalizes with streamTtftMs after first chunk
         response: streamSSE(c, async (s) => {
           const reader = decompressResponse(response).getReader();
           const decoder = new TextDecoder();
@@ -291,6 +306,10 @@ async function attemptProvider(params: AttemptParams): Promise<AttemptResult> {
             while (true) {
               const { done, value } = await reader.read();
               if (done) break;
+              if (value && value.byteLength > 0 && streamTtftMs === ttftMs) {
+                // First real chunk from upstream — capture true TTFT.
+                streamTtftMs = Date.now() - startTime;
+              }
               buffer += decoder.decode(value, { stream: true });
 
               const lines = buffer.split("\n");
@@ -382,6 +401,7 @@ async function attemptProvider(params: AttemptParams): Promise<AttemptResult> {
               cacheReadTokens: usage?.cache_read_tokens ?? 0,
               cacheWriteTokens: usage?.cache_write_tokens ?? 0,
               latencyMs: Date.now() - startTime,
+              ttftMs: streamTtftMs,
               status: response.status,
               logFile,
               apiKeyIndex,
@@ -390,6 +410,7 @@ async function attemptProvider(params: AttemptParams): Promise<AttemptResult> {
               agent,
               customTags,
               routeTrace,
+              startTime,
             });
           }
         }),
@@ -422,6 +443,7 @@ async function attemptProvider(params: AttemptParams): Promise<AttemptResult> {
       cacheReadTokens: usage?.cache_read_tokens ?? 0,
       cacheWriteTokens: usage?.cache_write_tokens ?? 0,
       latencyMs,
+      ttftMs,
       status: response.status,
       logFile,
       apiKeyIndex,
@@ -430,9 +452,10 @@ async function attemptProvider(params: AttemptParams): Promise<AttemptResult> {
       agent,
       customTags,
       routeTrace,
+      startTime,
     });
 
-    return { kind: "done", response: c.json(responseBody, response.status as any) };
+    return { kind: "done", response: c.json(responseBody, response.status as any), ttftMs };
   } catch (error: any) {
     const latencyMs = Date.now() - startTime;
     writeLog(requestId, {
@@ -443,7 +466,7 @@ async function attemptProvider(params: AttemptParams): Promise<AttemptResult> {
       error: error.message,
     });
 
-    return { kind: "retryable", status: 502, error: error.message };
+    return { kind: "retryable", status: 502, error: error.message, ttftMs: latencyMs };
   }
 }
 
@@ -501,7 +524,7 @@ function rawStreamPassthrough(params: RawStreamPassthroughParams): Promise<Attem
           attemptProvider: provider.id,
           status,
         });
-        resolve({ kind: "retryable", status });
+        resolve({ kind: "retryable", status, ttftMs: Date.now() - startTime });
         return;
       }
 
@@ -514,21 +537,30 @@ function rawStreamPassthrough(params: RawStreamPassthroughParams): Promise<Attem
         }
       }
 
+      // Time To First Byte for raw-streaming path: capture when the
+      // very first chunk actually arrives (not when headers do).
+      let firstChunkAt: number | null = null;
+
       // Collect raw bytes for async log parsing
       const rawChunks: Buffer[] = [];
       const passthrough = new Transform({
         transform(chunk, _encoding, callback) {
           rawChunks.push(Buffer.from(chunk));
+          if (firstChunkAt === null) firstChunkAt = Date.now();
           callback(null, chunk);
         },
         flush(callback) {
-          asyncParseBufferForLog(rawChunks, res.headers["content-encoding"] as string | undefined, requestId, respHeaders, provider, model, token, startTime, logFile, apiKeyIndex, pricing, agent, customTags, routeTrace, status, attemptIndex);
+          const ttftMs = (firstChunkAt ?? Date.now()) - startTime;
+          asyncParseBufferForLog(rawChunks, res.headers["content-encoding"] as string | undefined, requestId, respHeaders, provider, model, token, startTime, logFile, apiKeyIndex, pricing, agent, customTags, routeTrace, status, attemptIndex, ttftMs);
           callback();
         },
       });
 
       const stream = Readable.toWeb(res.pipe(passthrough) as unknown as Readable) as ReadableStream<Uint8Array>;
-      resolve({ kind: "done", response: new Response(stream, { status, headers: passthroughHeaders }) });
+      // ttftMs is captured at the first chunk (sync with what asyncParseBufferForLog
+      // computes); for the rare zero-chunk edge case fall back to "headers in".
+      const ttftMs = (firstChunkAt ?? Date.now()) - startTime;
+      resolve({ kind: "done", response: new Response(stream, { status, headers: passthroughHeaders }), ttftMs });
     });
 
     req.on("error", (error) => {
@@ -539,7 +571,7 @@ function rawStreamPassthrough(params: RawStreamPassthroughParams): Promise<Attem
         attemptProvider: provider.id,
         error: error.message,
       });
-      resolve({ kind: "retryable", status: 502, error: error.message });
+      resolve({ kind: "retryable", status: 502, error: error.message, ttftMs: Date.now() - startTime });
     });
     req.write(JSON.stringify(body));
     req.end();
@@ -563,6 +595,7 @@ function asyncParseBufferForLog(
   routeTrace?: RouteTraceEntry[],
   upstreamStatus?: number,
   attemptIndex?: number,
+  ttftMs?: number,
 ) {
   (async () => {
     let text: string;
@@ -658,6 +691,7 @@ function asyncParseBufferForLog(
       cacheReadTokens: usage?.cache_read_tokens ?? 0,
       cacheWriteTokens: usage?.cache_write_tokens ?? 0,
       latencyMs: Date.now() - startTime,
+      ttftMs: ttftMs ?? 0,
       status: recordedStatus,
       logFile,
       apiKeyIndex,
@@ -666,6 +700,7 @@ function asyncParseBufferForLog(
       agent,
       customTags,
       routeTrace,
+      startTime,
     });
   })().catch((e) => console.error(`[tokenparty] async log parse error for ${requestId}:`, e));
 }

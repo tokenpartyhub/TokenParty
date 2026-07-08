@@ -4,6 +4,38 @@ All notable changes to TokenParty are documented here.
 
 ## [Unreleased]
 
+## [0.0.21] - 2026-07-08
+
+### Added
+- TTFT (Time To First Token) tracking. Each upstream hop now records
+  `request_index.ttft_ms` — wall-clock from request entry to first
+  byte received from upstream. For streaming responses, the actual
+  perceived latency is reported (not the stream-drain duration).
+  Schema is auto-migrated on first startup; old rows default to 0
+  and render as "—" in the dashboard.
+
+### Changed
+- Requests list shows a time RANGE (start → end) per row instead of
+  a single timestamp. Format collapses redundant parts when the row
+  stays inside the same day / month / year:
+    same day       → "16:36:04-16:36:20"
+    same month     → "Jul 8, 16:36:04 - Jul 9, 16:36:20"
+    cross year     → "Dec 31 2025, 16:36:04 - Jan 1 2026, 16:36:20"
+- Requests table column order: Time, **Duration**, **TTFT**, User,
+  Model, Tokens, Cost, Status, Agent, Tags. The "Latency" column is
+  renamed and split into Duration (total wall-clock, includes
+  streaming) and TTFT (true first-byte latency).
+- All numeric durations are formatted in seconds (e.g. "0.3s",
+  "33.9s", "2m15s") with the raw ms available on hover.
+- Table font sizes normalized to a single `text-sm` baseline; removed
+  the previous `text-xs` overrides on User / Cost / Tags cells that
+  fought with the table size.
+- `request_index.timestamp` now stores the wall-clock time the
+  request entered `forwardRequest` (start time), not the time
+  `recordRequest` was called (which could be much later for long
+  streams). Long streams that previously appeared out of order
+  relative to child-agent calls now sort by their true start time.
+
 ### Fixed
 - Dashboard request detail page Response panel went blank after 0.0.20.
   The forwarder renamed its single outbound log entry from `response`
