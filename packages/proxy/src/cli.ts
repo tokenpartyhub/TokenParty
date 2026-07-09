@@ -6,8 +6,9 @@ import fs from "node:fs";
 import net from "node:net";
 import { spawn, execSync } from "node:child_process";
 import { loadConfig, watchConfig } from "./config.js";
-import { initDb, getValidAdminToken, getAdminTokenInfo, createAdminToken } from "./store/db.js";
-import { cleanupLogs } from "./store/log-writer.js";
+import { initDb, getValidAdminToken, getAdminTokenInfo, createAdminToken, migrateLegacyLogStorageSetting } from "./store/db.js";
+import { runRetentionCleanup } from "./store/log-writer.js";
+import { startRetentionScheduler } from "./scheduler.js";
 import { createServer } from "./server.js";
 
 const args = process.argv.slice(2);
@@ -263,6 +264,7 @@ function daemonStart() {
 
 async function foregroundStart() {
   initDb();
+  migrateLegacyLogStorageSetting();
   ensureAdminToken();
 
   if (process.env.TOKENPARTY_DAEMON === "1") {
@@ -270,9 +272,9 @@ async function foregroundStart() {
   }
 
   {
-    const result = cleanupLogs();
+    const result = runRetentionCleanup();
     if (result.deletedDays.length > 0) {
-      console.log(`[tokenparty] Log cleanup: deleted ${result.deletedDays.length} day(s), freed ${result.freedMB}MB`);
+      console.log(`[tokenparty] Initial retention cleanup (${result.reason}): deleted ${result.deletedDays.length} day(s), freed ${result.freedMB}MB`);
     }
   }
 
@@ -289,6 +291,7 @@ async function foregroundStart() {
     console.log(`[tokenparty] OpenAI endpoint:    /v1/*`);
     console.log(`[tokenparty] Anthropic endpoint: /anthropic/*`);
     console.log(`[tokenparty] Config:             ${configPath}`);
+    startRetentionScheduler();
   });
 }
 

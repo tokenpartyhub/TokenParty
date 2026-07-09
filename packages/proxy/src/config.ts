@@ -29,6 +29,15 @@ function resolveConfigEnvVars(obj: unknown): unknown {
 const DEFAULT_CONFIG = `server:
   port: 3456
   host: 0.0.0.0
+  # How long per-request detail logs are kept. Overview/aggregate stats
+  # are NOT cleared along with these — only the JSONL request detail
+  # and request_index rows are removed. Allowed: 1week (7d),
+  # 1month (30d), 2month (60d).
+  retentionPeriod: 1month
+  # Hard size ceiling in MB. After the time-based pass, if total log
+  # dir size still exceeds this, oldest days are pruned (today always
+  # kept). Acts as a safety net against runaway traffic.
+  retentionMaxSizeMB: 2048
 providers: []
 tokens: []
 `;

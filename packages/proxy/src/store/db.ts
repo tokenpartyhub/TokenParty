@@ -186,3 +186,17 @@ export function getSetting(key: string): string | null {
 export function setSetting(key: string, value: string) {
   db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)`).run(key, value);
 }
+
+
+// One-shot migration: drops the legacy max_log_size_mb setting if present.
+// Prior versions stored the storage cap in the SQLite settings table
+// instead of config.yaml; the new retention-based model reads its cap from
+// server.retentionMaxSizeMB and ignores any SQLite copy. Called from
+// index.ts and cli.ts at startup — idempotent and cheap.
+export function migrateLegacyLogStorageSetting(): boolean {
+  const existing = getSetting("max_log_size_mb");
+  if (existing === null) return false;
+  db.prepare(`DELETE FROM settings WHERE key = ?`).run("max_log_size_mb");
+  console.log(`[tokenparty] Migrated: dropped legacy max_log_size_mb setting (was ${existing} MB). Use server.retentionMaxSizeMB in config.yaml now.`);
+  return true;
+}

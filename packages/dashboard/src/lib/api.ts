@@ -125,17 +125,17 @@ export const api = {
   getVersion: () => request<{ version: string }>("/version").then((r) => r.version),
   checkUpdate: () => request<{ current: string; latest: string | null; hasUpdate: boolean }>("/version/check"),
 
-  getLogStorage: () => request<{ totalSizeMB: number; maxSizeMB: number; dayCount: number }>("/settings/log-storage"),
-  updateLogStorage: (maxSizeMB: number) =>
-    request<{ totalSizeMB: number; maxSizeMB: number; dayCount: number; cleaned: { deletedDays: string[]; freedMB: number } }>(
-      "/settings/log-storage", { method: "PUT", body: JSON.stringify({ maxSizeMB }) }
+  getLogStorage: () => request<{ totalSizeMB: number; maxSizeMB: number; dayCount: number; retentionPeriod: "1week" | "1month" | "2month" }>("/settings/log-storage"),
+  updateLogStorage: (data: { retentionPeriod?: "1week" | "1month" | "2month"; retentionMaxSizeMB?: number }) =>
+    request<{ totalSizeMB: number; maxSizeMB: number; dayCount: number; retentionPeriod: "1week" | "1month" | "2month"; cleaned: { deletedDays: string[]; freedMB: number } }>(
+      "/settings/log-storage", { method: "PUT", body: JSON.stringify(data) }
     ),
   triggerLogCleanup: () =>
-    request<{ totalSizeMB: number; maxSizeMB: number; dayCount: number; cleaned: { deletedDays: string[]; freedMB: number } }>(
+    request<{ totalSizeMB: number; maxSizeMB: number; dayCount: number; retentionPeriod: "1week" | "1month" | "2month"; cleaned: { deletedDays: string[]; freedMB: number } }>(
       "/settings/log-cleanup", { method: "POST" }
     ),
   clearAllLogs: () =>
-    request<{ totalSizeMB: number; maxSizeMB: number; dayCount: number; cleared: { freedMB: number } }>(
+    request<{ totalSizeMB: number; maxSizeMB: number; dayCount: number; retentionPeriod: "1week" | "1month" | "2month"; cleared: { freedMB: number } }>(
       "/settings/log-storage", { method: "DELETE" }
     ),
 

@@ -34,11 +34,20 @@ export function formatCost(usdCost: number): string {
   return `$${usdCost.toFixed(4)}`;
 }
 
+type RetentionPeriod = "1week" | "1month" | "2month";
+
 interface LogStorageInfo {
   totalSizeMB: number;
   maxSizeMB: number;
   dayCount: number;
+  retentionPeriod: RetentionPeriod;
 }
+
+const RETENTION_LABELS: Record<RetentionPeriod, string> = {
+  "1week": "1 周",
+  "1month": "1 个月",
+  "2month": "2 个月",
+};
 
 export default function Settings({ mode = "admin" }: { mode?: "admin" | "user" }) {
   const [settings, setSettings] = useState<SettingsData>(loadSettings);
@@ -134,55 +143,125 @@ export default function Settings({ mode = "admin" }: { mode?: "admin" | "user" }
               />
             </div>
             <p className="mt-1">Days stored: <span className="font-medium text-gray-900">{logStorage.dayCount}</span></p>
+            <p className="mt-1">
+              Current retention:{" "}
+              <span className="font-medium text-gray-900">{RETENTION_LABELS[logStorage.retentionPeriod]}</span>
+              <span className="text-gray-400"> · Overview 汇总数据不受影响</span>
+            </p>
           </div>
         )}
 
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Max Storage Size (MB)</label>
-          <p className="text-xs text-gray-500 mb-2">When exceeded, oldest day's logs are deleted automatically. Minimum: 50 MB.</p>
+          <label className="block text-sm font-medium text-gray-700 mb-1">请求日志留存时长</label>
+          <p className="text-xs text-gray-500 mb-2">每天自动清理过期请求详情；Overview 用量汇总会单独保留，不受清理影响。</p>
           <div className="flex gap-2">
-            <input
-              type="number"
-              min={50}
-              step={50}
-              value={maxSizeInput}
-              onChange={(e) => setMaxSizeInput(e.target.value)}
-              className="w-32 border rounded px-3 py-2 text-sm"
-            />
-            <button
-              onClick={() => {
-                const val = Number(maxSizeInput);
-                if (val < 50) return;
-                api.updateLogStorage(val).then((res) => {
-                  setLogStorage({ totalSizeMB: res.totalSizeMB, maxSizeMB: res.maxSizeMB, dayCount: res.dayCount });
-                  setSaved(true);
-                  setTimeout(() => setSaved(false), 1500);
-                  if (res.cleaned.deletedDays.length > 0) {
-                    alert(`Cleaned up ${res.cleaned.deletedDays.length} day(s), freed ${res.cleaned.freedMB} MB`);
-                  }
-                }).catch(console.error);
-              }}
-              className="px-4 py-2 bg-blue-600 text-white rounded text-sm hover:bg-blue-700"
-            >
-              Save
-            </button>
+            {(["1week", "1month", "2month"] as RetentionPeriod[]).map((p) => (
+              <button
+                key={p}
+                onClick={() => {
+                  api.updateLogStorage({ retentionPeriod: p }).then((res) => {
+                    setLogStorage({
+                      totalSizeMB: res.totalSizeMB,
+                      maxSizeMB: res.maxSizeMB,
+                      dayCount: res.dayCount,
+                      retentionPeriod: res.retentionPeriod,
+                    });
+                    setSaved(true);
+                    setTimeout(() => setSaved(false), 1500);
+                    if (res.cleaned.deletedDays.length > 0) {
+                      alert(`已清理 ${res.cleaned.deletedDays.length} 天过期日志，释放 ${res.cleaned.freedMB} MB`);
+                    }
+                  }).catch(console.error);
+                }}
+                className={`px-4 py-2 rounded text-sm border ${logStorage?.retentionPeriod === p ? "bg-blue-600 text-white border-blue-600" : "bg-white text-gray-700 border-gray-300 hover:bg-gray-50"}`}
+              >
+                {RETENTION_LABELS[p]}
+              </button>
+            ))}
           </div>
         </div>
 
-        <div>
+        <details>
+          <summary className="text-sm text-gray-700 cursor-pointer">容量上限（高级）</summary>
+          <div className="mt-3">
+            <label className="block text-sm font-medium text-gray-700 mb-1">Max Storage Size (MB)</label>
+            <p className="text-xs text-gray-500 mb-2">当总占用超过此上限时，按日期从旧到新逐天删除，直至低于上限（今天始终保留）。最小 50 MB。</p>
+            <div className="flex gap-2">
+              <input
+                type="number"
+                min={50}
+                step={50}
+                value={maxSizeInput}
+                onChange={(e) => setMaxSizeInput(e.target.value)}
+                className="w-32 border rounded px-3 py-2 text-sm"
+              />
+              <button
+                onClick={() => {
+                  const val = Number(maxSizeInput);
+                  if (val < 50) return;
+                  api.updateLogStorage({ retentionMaxSizeMB: val }).then((res) => {
+                    setLogStorage({
+                      totalSizeMB: res.totalSizeMB,
+                      maxSizeMB: res.maxSizeMB,
+                      dayCount: res.dayCount,
+                      retentionPeriod: res.retentionPeriod,
+                    });
+                    setSaved(true);
+                    setTimeout(() => setSaved(false), 1500);
+                    if (res.cleaned.deletedDays.length > 0) {
+                      alert(`已清理 ${res.cleaned.deletedDays.length} 天过期日志，释放 ${res.cleaned.freedMB} MB`);
+                    }
+                  }).catch(console.error);
+                }}
+                className="px-4 py-2 bg-blue-600 text-white rounded text-sm hover:bg-blue-700"
+              >
+                保存
+              </button>
+            </div>
+          </div>
+        </details>
+
+        <div className="flex flex-wrap gap-2">
           <button
             disabled={cleaning}
             onClick={() => {
-              if (!confirm("This will permanently delete ALL request logs and usage statistics. Continue?")) return;
+              setCleaning(true);
+              api.triggerLogCleanup().then((res) => {
+                setLogStorage({
+                  totalSizeMB: res.totalSizeMB,
+                  maxSizeMB: res.maxSizeMB,
+                  dayCount: res.dayCount,
+                  retentionPeriod: res.retentionPeriod,
+                });
+                if (res.cleaned.deletedDays.length === 0) {
+                  alert("当前没有需要清理的过期日志。");
+                } else {
+                  alert(`已清理 ${res.cleaned.deletedDays.length} 天，释放 ${res.cleaned.freedMB} MB`);
+                }
+              }).catch(console.error).finally(() => setCleaning(false));
+            }}
+            className="px-4 py-2 bg-gray-100 text-gray-700 rounded text-sm hover:bg-gray-200 border border-gray-300"
+          >
+            {cleaning ? "清理中..." : "立即清理过期日志"}
+          </button>
+          <button
+            disabled={cleaning}
+            onClick={() => {
+              if (!confirm("这将永久删除全部请求日志和用量汇总数据。继续？")) return;
               setCleaning(true);
               api.clearAllLogs().then((res) => {
-                setLogStorage({ totalSizeMB: res.totalSizeMB, maxSizeMB: res.maxSizeMB, dayCount: res.dayCount });
-                alert(`All logs cleared, freed ${res.cleared.freedMB} MB`);
+                setLogStorage({
+                  totalSizeMB: res.totalSizeMB,
+                  maxSizeMB: res.maxSizeMB,
+                  dayCount: res.dayCount,
+                  retentionPeriod: res.retentionPeriod,
+                });
+                alert(`已清空全部日志，释放 ${res.cleared.freedMB} MB`);
               }).catch(console.error).finally(() => setCleaning(false));
             }}
             className="px-4 py-2 bg-red-50 text-red-600 rounded text-sm hover:bg-red-100 border border-red-200"
           >
-            {cleaning ? "Clearing..." : "Clear All Logs"}
+            {cleaning ? "清空中..." : "清空全部日志"}
           </button>
         </div>
       </div>}

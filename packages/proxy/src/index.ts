@@ -1,11 +1,13 @@
 import { serve } from "@hono/node-server";
 import { loadConfig, watchConfig } from "./config.js";
-import { initDb, getValidAdminToken, getAdminTokenInfo, createAdminToken } from "./store/db.js";
-import { cleanupLogs } from "./store/log-writer.js";
+import { initDb, getValidAdminToken, getAdminTokenInfo, createAdminToken, migrateLegacyLogStorageSetting } from "./store/db.js";
+import { runRetentionCleanup } from "./store/log-writer.js";
+import { startRetentionScheduler } from "./scheduler.js";
 import { createServer } from "./server.js";
 
 const config = loadConfig();
 initDb();
+migrateLegacyLogStorageSetting();
 
 {
   let token = getValidAdminToken();
@@ -15,9 +17,12 @@ initDb();
 }
 
 {
-  const result = cleanupLogs();
+  // One-shot retention pass at boot so a fresh deploy catches up on any
+  // days that piled up while the gateway was down. Quiet unless work
+  // was actually done.
+  const result = runRetentionCleanup();
   if (result.deletedDays.length > 0) {
-    console.log(`[tokenparty] Log cleanup: deleted ${result.deletedDays.length} day(s), freed ${result.freedMB}MB`);
+    console.log(`[tokenparty] Initial retention cleanup (${result.reason}): deleted ${result.deletedDays.length} day(s), freed ${result.freedMB}MB`);
   }
 }
 
@@ -34,5 +39,6 @@ serve(
     console.log(`[tokenparty] OpenAI endpoint:    /v1/*`);
     console.log(`[tokenparty] Anthropic endpoint: /anthropic/*`);
     console.log(`[tokenparty] Dashboard API:      /api/*`);
+    startRetentionScheduler();
   }
 );

@@ -50,10 +50,32 @@ export const ConfigSchema = z.object({
     // instead of waiting tens of minutes for the socket to give up.
     upstreamTimeoutMs: z.number().default(30_000),
     streamingUpstreamTimeoutMs: z.number().default(300_000),
+    // How long per-request detail logs (JSONL on disk) are kept before
+    // the daily cleanup job prunes them. The Overview/usage_daily
+    // aggregate is preserved beyond this window — only the request
+    // detail rows (and request_index entries pointing at them) are
+    // removed. If total log dir size still exceeds retentionMaxSizeMB
+    // after the time-based pass, oldest days are pruned until under
+    // the cap (today is always preserved).
+    retentionPeriod: z.enum(["1week", "1month", "2month"]).default("1month"),
+    retentionMaxSizeMB: z.number().default(2048),
   }),
   providers: z.array(ProviderSchema),
   tokens: z.array(TokenSchema),
 });
+
+// Maps a retention period enum to the number of days of detail logs kept.
+// 1week / 1month / 2month are the three options exposed in the Dashboard
+// Settings UI; we deliberately keep this an enum rather than a free-form
+// number so we can extend the set later without breaking existing
+// config.yaml files.
+export function retentionPeriodToDays(period: "1week" | "1month" | "2month"): number {
+  switch (period) {
+    case "1week": return 7;
+    case "1month": return 30;
+    case "2month": return 60;
+  }
+}
 
 export type ModelConfig = z.infer<typeof ModelSchema>;
 export type Provider = z.infer<typeof ProviderSchema>;

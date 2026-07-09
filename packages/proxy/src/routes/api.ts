@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { getConfig, updateConfig } from "../config.js";
 import { getDb, validateAdminToken, getSetting, setSetting } from "../store/db.js";
-import { readLog, getLogStats, cleanupLogs, clearAllLogs } from "../store/log-writer.js";
+import { readLog, getLogStats, runRetentionCleanup, clearAllLogs } from "../store/log-writer.js";
 import { nanoid } from "nanoid";
 import { getModelId, ProviderSchema } from "../types/config.js";
 import { readFileSync } from "node:fs";
@@ -351,16 +351,34 @@ apiRoutes.get("/settings/log-storage", (c) => {
 });
 
 apiRoutes.put("/settings/log-storage", async (c) => {
-  const { maxSizeMB } = await c.req.json<{ maxSizeMB: number }>();
-  if (!maxSizeMB || maxSizeMB < 50) return c.json({ error: "Minimum 50MB" }, 400);
-  setSetting("max_log_size_mb", String(maxSizeMB));
-  const result = cleanupLogs();
+  // Accepts either (a) legacy { maxSizeMB } — translated into
+  // retentionMaxSizeMB on a fresh 1month period — or (b) the new shape
+  // { retentionPeriod, retentionMaxSizeMB } that the Settings page sends.
+  const body = await c.req.json<{ maxSizeMB?: number; retentionPeriod?: "1week" | "1month" | "2month"; retentionMaxSizeMB?: number }>();
+  const update: Record<string, unknown> = {};
+  if (body.retentionPeriod) update.retentionPeriod = body.retentionPeriod;
+  if (typeof body.retentionMaxSizeMB === "number") {
+    if (body.retentionMaxSizeMB < 50) return c.json({ error: "Minimum 50MB" }, 400);
+    update.retentionMaxSizeMB = body.retentionMaxSizeMB;
+  } else if (typeof body.maxSizeMB === "number") {
+    if (body.maxSizeMB < 50) return c.json({ error: "Minimum 50MB" }, 400);
+    update.retentionMaxSizeMB = body.maxSizeMB;
+  }
+  if (Object.keys(update).length === 0) return c.json({ error: "No fields to update" }, 400);
+  updateConfig((raw) => {
+    const server = raw.server as Record<string, unknown>;
+    if (update.retentionPeriod) server.retentionPeriod = update.retentionPeriod;
+    if (update.retentionMaxSizeMB) server.retentionMaxSizeMB = update.retentionMaxSizeMB;
+  });
+  // Drop the legacy SQLite setting; retention is now config-driven.
+  getDb().prepare("DELETE FROM settings WHERE key = ?").run("max_log_size_mb");
+  const result = runRetentionCleanup();
   const stats = getLogStats();
   return c.json({ ...stats, cleaned: result });
 });
 
 apiRoutes.post("/settings/log-cleanup", (c) => {
-  const result = cleanupLogs();
+  const result = runRetentionCleanup();
   const stats = getLogStats();
   return c.json({ ...stats, cleaned: result });
 });
