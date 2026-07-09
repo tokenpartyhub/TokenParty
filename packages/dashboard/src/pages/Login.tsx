@@ -119,7 +119,7 @@ export default function Login() {
           </button>
         </form>
         <p className="text-xs text-gray-400 text-center mt-4">
-          Run <code className="bg-gray-100 px-1 rounded">tokenparty --token</code> to view your admin token
+          Run <code className="bg-gray-100 px-1 rounded">tokenparty token</code> to view your admin token
         </p>
       </div>
     </div>
