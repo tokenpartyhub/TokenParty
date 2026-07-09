@@ -67,9 +67,16 @@ function makeConfig(opts: {
   backupUrl?: string;
   dataDir: string;
   includeAnthropic?: boolean;
+  upstreamTimeoutMs?: number;
+  streamingUpstreamTimeoutMs?: number;
 }): Config {
   return {
-    server: { port: 0, host: "127.0.0.1", logDir: path.join(opts.dataDir, "logs"), dataDir: opts.dataDir },
+    server: {
+      port: 0, host: "127.0.0.1",
+      logDir: path.join(opts.dataDir, "logs"), dataDir: opts.dataDir,
+      upstreamTimeoutMs: opts.upstreamTimeoutMs ?? 30_000,
+      streamingUpstreamTimeoutMs: opts.streamingUpstreamTimeoutMs ?? 300_000,
+    },
     providers: [
       {
         id: "primary",
@@ -111,9 +118,22 @@ function makeConfig(opts: {
   };
 }
 
-async function setupApp(opts: { primaryUrl: string; backupUrl?: string; includeAnthropic?: boolean }) {
+async function setupApp(opts: {
+  primaryUrl: string;
+  backupUrl?: string;
+  includeAnthropic?: boolean;
+  upstreamTimeoutMs?: number;
+  streamingUpstreamTimeoutMs?: number;
+}) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "tokenparty-test-"));
-  const config = makeConfig({ primaryUrl: opts.primaryUrl, backupUrl: opts.backupUrl, dataDir, includeAnthropic: opts.includeAnthropic });
+  const config = makeConfig({
+    primaryUrl: opts.primaryUrl,
+    backupUrl: opts.backupUrl,
+    dataDir,
+    includeAnthropic: opts.includeAnthropic,
+    upstreamTimeoutMs: opts.upstreamTimeoutMs,
+    streamingUpstreamTimeoutMs: opts.streamingUpstreamTimeoutMs,
+  });
   _setConfigForTest(config);
   initDb();
   const app = createServer();
@@ -349,5 +369,106 @@ describe("integration: models list endpoints", () => {
       ctx.cleanup();
       await upstream.close();
     }
+  });
+});
+
+// Mock upstream that hangs without responding. Used for timeout and
+// client-disconnect tests. Tracks connections so we can assert the
+// socket was closed.
+class SlowUpstream {
+  connections: { aborted: boolean }[] = [];
+  server: http.Server;
+  port = 0;
+
+  constructor() {
+    this.server = http.createServer((req, res) => {
+      const conn = { aborted: false };
+      this.connections.push(conn);
+      req.on("aborted", () => { conn.aborted = true; });
+      // never write a response — just hold the socket open
+    });
+  }
+
+  async listen(): Promise<void> {
+    await new Promise<void>((resolve) => this.server.listen(0, "127.0.0.1", resolve));
+    this.port = (this.server.address() as AddressInfo).port;
+  }
+
+  url(path: string): string {
+    return `http://127.0.0.1:${this.port}${path}`;
+  }
+
+  async close(): Promise<void> {
+    await new Promise<void>((resolve) => this.server.close(() => resolve()));
+  }
+}
+
+describe("integration: upstream timeout + client disconnect", () => {
+  let slow: SlowUpstream;
+  let cleanup: () => void;
+
+  afterEach(async () => {
+    cleanup();
+    await slow?.close();
+  });
+
+  it("aborts the upstream request after upstreamTimeoutMs and returns 502", async () => {
+    slow = new SlowUpstream();
+    await slow.listen();
+    const ctx = await setupApp({
+      primaryUrl: slow.url("/v1"),
+      upstreamTimeoutMs: 500,
+      backupUrl: slow.url("/v1"),  // also hangs; just need a candidate list
+    });
+    cleanup = ctx.cleanup;
+
+    const start = Date.now();
+    const res = await ctx.app.request("/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer tp-test" },
+      body: JSON.stringify({ model: "test-model", messages: [{ role: "user", content: "hi" }] }),
+    });
+    const elapsed = Date.now() - start;
+
+    assert.equal(res.status, 502);
+    assert.ok(elapsed < 5_000, `expected to fail under 5s, took ${elapsed}ms`);
+    const body = await res.json();
+    assert.match(body.error, /All provider candidates failed/);
+  });
+
+  it("aborts the upstream when the client disconnects mid-stream", async () => {
+    slow = new SlowUpstream();
+    await slow.listen();
+    const ctx = await setupApp({
+      primaryUrl: slow.url("/anthropic"),
+      includeAnthropic: true,
+      upstreamTimeoutMs: 60_000, // long, so we can prove the abort is from client
+      streamingUpstreamTimeoutMs: 60_000,
+    });
+    cleanup = ctx.cleanup;
+
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 200);
+    const reqPromise = ctx.app.request("/anthropic/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "anthropic-version": "2023-06-01",
+        "x-api-key": "tp-test",
+      },
+      body: JSON.stringify({
+        model: "claude-test",
+        messages: [{ role: "user", content: "hi" }],
+        stream: true,
+      }),
+      signal: controller.signal,
+    }).catch((e: any) => e);
+
+    // Give the proxy time to register the request and reach the
+    // upstream before the abort fires.
+    await new Promise((r) => setTimeout(r, 600));
+    // The upstream socket should have been closed by the abort.
+    const aborted = slow.connections.filter((c) => c.aborted).length;
+    assert.ok(aborted > 0, "expected at least one upstream connection to be aborted on client disconnect");
   });
 });

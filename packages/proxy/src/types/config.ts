@@ -43,6 +43,13 @@ export const ConfigSchema = z.object({
     host: z.string().default("0.0.0.0"),
     logDir: z.string().default("./logs"),
     dataDir: z.string().default("./data"),
+    // Hard upper bound on how long we wait for upstream to respond
+    // (or to keep streaming). When the upstream hangs longer than
+    // this we abort the upstream request and surface a 502 to the
+    // client so the dashboard reflects the failure immediately
+    // instead of waiting tens of minutes for the socket to give up.
+    upstreamTimeoutMs: z.number().default(30_000),
+    streamingUpstreamTimeoutMs: z.number().default(300_000),
   }),
   providers: z.array(ProviderSchema),
   tokens: z.array(TokenSchema),

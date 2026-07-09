@@ -2,6 +2,7 @@ import type { Context } from "hono";
 import type { AppEnv } from "../types/env.js";
 import type { Provider } from "../types/config.js";
 import { getModelId, getModelPricing } from "../types/config.js";
+import { getConfig } from "../config.js";
 import { nanoid } from "nanoid";
 import { writeLog } from "../store/log-writer.js";
 import { recordRequest } from "../metrics/collector.js";
@@ -109,6 +110,35 @@ export async function forwardRequest(
     body,
   });
 
+  // Bound how long we wait for upstream before giving up. Without
+  // this a hung upstream keeps the request "open" in the dashboard
+  // for tens of minutes (Node's default socket timeout) and the
+  // client has long since given up with "connection error".
+  // Streaming requests get a longer window because the response is a
+  // continuous stream; non-streaming should resolve in seconds.
+  const cfg = getConfig();
+  const upstreamTimeoutMs = isStreaming
+    ? cfg.server.streamingUpstreamTimeoutMs
+    : cfg.server.upstreamTimeoutMs;
+  const upstreamController = new AbortController();
+  const upstreamTimer = setTimeout(() => upstreamController.abort("upstream_timeout"), upstreamTimeoutMs);
+  // If the client (e.g. openclaw, claude-code) disconnects, cancel
+  // the upstream request immediately so we don't keep burning a
+  // connection to the provider for nothing.
+  const onClientAbort = () => upstreamController.abort("client_disconnect");
+  if (c.req.raw.signal) {
+    if (c.req.raw.signal.aborted) onClientAbort();
+    else c.req.raw.signal.addEventListener("abort", onClientAbort, { once: true });
+  }
+
+  try {
+    return await runForwardLoop();
+  } finally {
+    clearTimeout(upstreamTimer);
+    if (c.req.raw.signal) c.req.raw.signal.removeEventListener("abort", onClientAbort);
+  }
+
+  async function runForwardLoop() {
   for (let i = 0; i < candidateProviders.length; i++) {
     const provider = candidateProviders[i];
     const providerPricing = getModelPricing(provider.models.find((m) => getModelId(m) === model)!);
@@ -146,6 +176,7 @@ export async function forwardRequest(
       routeTrace,
       model,
       attemptIndex: i,
+      upstreamSignal: upstreamController.signal,
     });
 
     if (attemptResult.kind === "done") {
@@ -193,6 +224,7 @@ export async function forwardRequest(
     error: "All provider candidates failed",
   });
   return c.json({ error: "All provider candidates failed" }, 502);
+  }
 }
 
 function rebuildHeaders(c: Context<AppEnv>): Record<string, string> {
@@ -222,6 +254,7 @@ interface AttemptParams {
   routeTrace: RouteTraceEntry[];
   model: string;
   attemptIndex: number;
+  upstreamSignal: AbortSignal;
 }
 
 // One upstream attempt. Two paths:
@@ -244,7 +277,7 @@ async function attemptProvider(params: AttemptParams): Promise<AttemptResult> {
       const result = await rawStreamPassthrough({
         targetUrl, upstreamHeaders, body: attemptBody, requestId, provider,
         model, token, startTime, logFile, apiKeyIndex, pricing: providerPricing,
-        agent, customTags, routeTrace, attemptIndex,
+        agent, customTags, routeTrace, attemptIndex, upstreamSignal: params.upstreamSignal,
       });
       if (result.kind === "retryable") return result;
       routeTrace.push({ provider: provider.id, status: 200, latencyMs: 0 });
@@ -255,6 +288,7 @@ async function attemptProvider(params: AttemptParams): Promise<AttemptResult> {
       method: "POST",
       headers: upstreamHeaders,
       body: JSON.stringify(attemptBody),
+      signal: params.upstreamSignal,
     });
 
     if (isRetryableStatus(response.status)) {
@@ -341,6 +375,7 @@ interface RawStreamPassthroughParams {
   customTags?: string;
   routeTrace?: RouteTraceEntry[];
   attemptIndex: number;
+  upstreamSignal: AbortSignal;
 }
 
 // Same-protocol streaming pass-through. Pipes the upstream body through
@@ -349,7 +384,7 @@ interface RawStreamPassthroughParams {
 function rawStreamPassthrough(params: RawStreamPassthroughParams): Promise<AttemptResult> {
   const {
     targetUrl, upstreamHeaders, body, requestId, provider, model, token,
-    startTime, logFile, apiKeyIndex, pricing, agent, customTags, routeTrace, attemptIndex,
+    startTime, logFile, apiKeyIndex, pricing, agent, customTags, routeTrace, attemptIndex, upstreamSignal,
   } = params;
 
   const url = new URL(targetUrl);
@@ -362,6 +397,21 @@ function rawStreamPassthrough(params: RawStreamPassthroughParams): Promise<Attem
       headers: { ...upstreamHeaders, "content-type": "application/json" },
       agent: keepAliveAgent,
     }, (res) => {
+      if (upstreamSignal.aborted) {
+        // Client already disconnected or upstream timeout fired before
+        // the response arrived. Tear down immediately.
+        res.destroy();
+        const reason = upstreamSignal.reason === "client_disconnect" ? "client_disconnect" : "upstream_timeout";
+        writeLog(requestId, {
+          type: "attempt_response",
+          timestamp: Date.now(),
+          attemptIndex,
+          attemptProvider: provider.id,
+          error: reason,
+        });
+        resolve({ kind: "retryable", status: 502, error: reason, ttftMs: Date.now() - startTime });
+        return;
+      }
       const respHeaders: Record<string, string> = {};
       for (const [key, val] of Object.entries(res.headers)) {
         if (val) respHeaders[key] = Array.isArray(val) ? val.join(", ") : val;
@@ -426,6 +476,13 @@ function rawStreamPassthrough(params: RawStreamPassthroughParams): Promise<Attem
       });
       resolve({ kind: "retryable", status: 502, error: error.message, ttftMs: Date.now() - startTime });
     });
+    // Cancel the in-flight http.request when the upstream signal fires
+    // (timeout or client disconnect). req.destroy forces the socket
+    // closed and the pending "error" handler above to resolve the
+    // promise with a clean 502.
+    upstreamSignal.addEventListener("abort", () => {
+      if (!req.destroyed) req.destroy(new Error(upstreamSignal.reason === "client_disconnect" ? "client_disconnect" : "upstream_timeout"));
+    }, { once: true });
     req.write(JSON.stringify(body));
     req.end();
   });

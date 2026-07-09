@@ -4,6 +4,27 @@ All notable changes to TokenParty are documented here.
 
 ## [Unreleased]
 
+## [0.0.25] - 2026-07-09
+
+### Fixed
+- Hung upstream requests no longer keep the proxy waiting for tens
+  of minutes. The forwarder now bounds each upstream call to
+  `server.upstreamTimeoutMs` (default 30s) for non-streaming and
+  `server.streamingUpstreamTimeoutMs` (default 5min) for streaming;
+  on expiry the upstream socket is destroyed and the request is
+  recorded as a 502 with reason `upstream_timeout`.
+- When the client (openclaw / claude-code / etc.) disconnects
+  mid-stream, the upstream request is aborted immediately and the
+  reason `client_disconnect` is recorded, so a hung downstream
+  client no longer holds a live upstream connection for the full
+  upstream timeout.
+
+### Added
+- `server.upstreamTimeoutMs` and `server.streamingUpstreamTimeoutMs`
+  config fields.
+- Integration tests: upstream timeout returns 502 within the
+  timeout window; client abort closes the upstream socket.
+
 ## [0.0.24] - 2026-07-09
 
 ### Fixed
