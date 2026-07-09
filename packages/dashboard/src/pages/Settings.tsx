@@ -44,9 +44,9 @@ interface LogStorageInfo {
 }
 
 const RETENTION_LABELS: Record<RetentionPeriod, string> = {
-  "1week": "1 周",
-  "1month": "1 个月",
-  "2month": "2 个月",
+  "1week": "1 week",
+  "1month": "1 month",
+  "2month": "2 months",
 };
 
 export default function Settings({ mode = "admin" }: { mode?: "admin" | "user" }) {
@@ -146,14 +146,14 @@ export default function Settings({ mode = "admin" }: { mode?: "admin" | "user" }
             <p className="mt-1">
               Current retention:{" "}
               <span className="font-medium text-gray-900">{RETENTION_LABELS[logStorage.retentionPeriod]}</span>
-              <span className="text-gray-400"> · Overview 汇总数据不受影响</span>
+              <span className="text-gray-400"> · Overview aggregates preserved</span>
             </p>
           </div>
         )}
 
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">请求日志留存时长</label>
-          <p className="text-xs text-gray-500 mb-2">每天自动清理过期请求详情；Overview 用量汇总会单独保留，不受清理影响。</p>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Request Log Retention</label>
+          <p className="text-xs text-gray-500 mb-2">Expired request details are auto-pruned daily. Overview usage aggregates are preserved independently.</p>
           <div className="flex gap-2">
             {(["1week", "1month", "2month"] as RetentionPeriod[]).map((p) => (
               <button
@@ -169,7 +169,7 @@ export default function Settings({ mode = "admin" }: { mode?: "admin" | "user" }
                     setSaved(true);
                     setTimeout(() => setSaved(false), 1500);
                     if (res.cleaned.deletedDays.length > 0) {
-                      alert(`已清理 ${res.cleaned.deletedDays.length} 天过期日志，释放 ${res.cleaned.freedMB} MB`);
+                      alert(`Cleaned ${res.cleaned.deletedDays.length} expired day(s), freed ${res.cleaned.freedMB} MB`);
                     }
                   }).catch(console.error);
                 }}
@@ -182,10 +182,10 @@ export default function Settings({ mode = "admin" }: { mode?: "admin" | "user" }
         </div>
 
         <details>
-          <summary className="text-sm text-gray-700 cursor-pointer">容量上限（高级）</summary>
+          <summary className="text-sm text-gray-700 cursor-pointer">Size cap (advanced)</summary>
           <div className="mt-3">
             <label className="block text-sm font-medium text-gray-700 mb-1">Max Storage Size (MB)</label>
-            <p className="text-xs text-gray-500 mb-2">当总占用超过此上限时，按日期从旧到新逐天删除，直至低于上限（今天始终保留）。最小 50 MB。</p>
+            <p className="text-xs text-gray-500 mb-2">When total usage exceeds this cap, oldest days are pruned one by one until under the cap (today is always preserved). Minimum: 50 MB.</p>
             <div className="flex gap-2">
               <input
                 type="number"
@@ -209,13 +209,13 @@ export default function Settings({ mode = "admin" }: { mode?: "admin" | "user" }
                     setSaved(true);
                     setTimeout(() => setSaved(false), 1500);
                     if (res.cleaned.deletedDays.length > 0) {
-                      alert(`已清理 ${res.cleaned.deletedDays.length} 天过期日志，释放 ${res.cleaned.freedMB} MB`);
+                      alert(`Cleaned ${res.cleaned.deletedDays.length} expired day(s), freed ${res.cleaned.freedMB} MB`);
                     }
                   }).catch(console.error);
                 }}
                 className="px-4 py-2 bg-blue-600 text-white rounded text-sm hover:bg-blue-700"
               >
-                保存
+                Save
               </button>
             </div>
           </div>
@@ -234,20 +234,20 @@ export default function Settings({ mode = "admin" }: { mode?: "admin" | "user" }
                   retentionPeriod: res.retentionPeriod,
                 });
                 if (res.cleaned.deletedDays.length === 0) {
-                  alert("当前没有需要清理的过期日志。");
+                  alert("No expired logs to clean up.");
                 } else {
-                  alert(`已清理 ${res.cleaned.deletedDays.length} 天，释放 ${res.cleaned.freedMB} MB`);
+                  alert(`Cleaned ${res.cleaned.deletedDays.length} day(s), freed ${res.cleaned.freedMB} MB`);
                 }
               }).catch(console.error).finally(() => setCleaning(false));
             }}
             className="px-4 py-2 bg-gray-100 text-gray-700 rounded text-sm hover:bg-gray-200 border border-gray-300"
           >
-            {cleaning ? "清理中..." : "立即清理过期日志"}
+            {cleaning ? "Cleaning..." : "Clean expired logs now"}
           </button>
           <button
             disabled={cleaning}
             onClick={() => {
-              if (!confirm("这将永久删除全部请求日志和用量汇总数据。继续？")) return;
+              if (!confirm("This will permanently delete all request logs and usage statistics. Continue?")) return;
               setCleaning(true);
               api.clearAllLogs().then((res) => {
                 setLogStorage({
@@ -256,12 +256,12 @@ export default function Settings({ mode = "admin" }: { mode?: "admin" | "user" }
                   dayCount: res.dayCount,
                   retentionPeriod: res.retentionPeriod,
                 });
-                alert(`已清空全部日志，释放 ${res.cleared.freedMB} MB`);
+                alert(`All logs cleared, freed ${res.cleared.freedMB} MB`);
               }).catch(console.error).finally(() => setCleaning(false));
             }}
             className="px-4 py-2 bg-red-50 text-red-600 rounded text-sm hover:bg-red-100 border border-red-200"
           >
-            {cleaning ? "清空中..." : "清空全部日志"}
+            {cleaning ? "Clearing..." : "Clear All Logs"}
           </button>
         </div>
       </div>}

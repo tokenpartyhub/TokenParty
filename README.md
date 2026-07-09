@@ -281,7 +281,7 @@ TokenParty/
 - [x] Provider groups & access control
 - [x] Provider fallback / retry
 - [x] Log storage management
-- [x] Configurable log retention (1周 / 1个月 / 2个月) + rolling daily cleanup; Overview 汇总数据单独保留
+- [x] Configurable log retention (1 week / 1 month / 2 months) + rolling daily cleanup; Overview aggregates preserved
 - [x] AI agent detection & per-agent detail panel (Claude Code, OpenClaw)
 - [x] Model-level priority with ordered fallback chain across providers
 - [x] Route trace — visual routing diagram for each request
