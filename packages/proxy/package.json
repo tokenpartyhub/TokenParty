@@ -1,6 +1,6 @@
 {
   "name": "@tokenparty/tokenparty",
-  "version": "0.0.23",
+  "version": "0.0.24",
   "description": "Self-hosted AI gateway — route, observe, and control your LLM API traffic. OpenAI ↔ Anthropic protocol translation, cost-based smart routing, per-user budgets, and a built-in dashboard. Zero dependencies.",
   "type": "module",
   "bin": {
@@ -13,6 +13,8 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
+    "test": "tsx --test test/**/*.test.ts",
+    "test:watch": "tsx --test --watch test/**/*.test.ts",
     "build:publish": "tsc && pnpm --filter @tokenparty/dashboard build && rm -rf dashboard && cp -r ../dashboard/dist dashboard",
     "start": "node dist/index.js"
   },

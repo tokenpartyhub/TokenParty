@@ -4,6 +4,39 @@ All notable changes to TokenParty are documented here.
 
 ## [Unreleased]
 
+## [0.0.24] - 2026-07-09
+
+### Fixed
+- Routes no longer pass the request body as the 4th positional
+  argument to `forwardRequest` (which after the 0.0.22 signature
+  reduction was bound to `_routeTrace`). Surfaced as
+  `TypeError: routeTrace.push is not a function` on the first
+  retryable attempt of any Anthropic / OpenAI request.
+- Route handlers pick the first candidate whose provider.type
+  matches the entry protocol, instead of just `providers[0]`.
+  Same model served by both anthropic- and openai-type providers
+  (priority 999 vs no-priority) was being rejected because the
+  router-sorted top provider didn't match the entry. The picked
+  provider becomes the fallback-chain head so retry semantics
+  remain intact.
+- Cross-protocol rejection message direction: when only an
+  anthropic-type candidate exists and the user hits `/v1`, the
+  error now recommends `/anthropic` (the matching entry), not the
+  entry the user is currently on.
+
+### Added
+- `packages/proxy/src/proxy/route-picker.ts`: shared
+  `pickProviderForEntry` helper used by both routes.
+- `packages/proxy/src/config.ts`: `_setConfigForTest` test hook.
+- `packages/proxy/test/`: integration test suite using `node:test`.
+  Three files, 24 tests total:
+    - `route-picker.test.ts` (8) — pick-by-entry semantics
+    - `router.test.ts` (4) — resolveProvider priority + model listing
+    - `integration.test.ts` (12) — real Hono `app.request()` against
+      a mock upstream HTTP server covering auth, success, retryable
+      fallback, all-failed 502, cross-protocol rejection, models list
+  Run with `pnpm --filter @tokenparty/tokenparty test`.
+
 ## [0.0.23] - 2026-07-08
 
 ### Fixed

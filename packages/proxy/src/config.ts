@@ -83,3 +83,10 @@ export function updateConfig(mutator: (raw: Record<string, unknown>) => void): C
   fs.writeFileSync(configPath, newYaml, "utf-8");
   return loadConfig(configPath);
 }
+
+// Test helper: inject a config object directly without touching disk.
+// The schema is the same one used by loadConfig, so a Config parsed
+// here is interchangeable with one loaded from YAML.
+export function _setConfigForTest(config: Config): void {
+  currentConfig = config;
+}

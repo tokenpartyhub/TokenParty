@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { authMiddleware } from "../proxy/auth.js";
 import { forwardRequest } from "../proxy/forwarder.js";
 import { resolveProvider, listAvailableModels } from "../proxy/router.js";
+import { pickProviderForEntry } from "../proxy/route-picker.js";
 import type { AppEnv } from "../types/env.js";
 
 export const openaiRoutes = new Hono<AppEnv>();
@@ -23,28 +24,9 @@ openaiRoutes.get("/models", (c) => {
 });
 
 // Pick the first candidate whose provider.type matches the entry
-// protocol. Cross-protocol is no longer supported, but a model that
-// is served by both anthropic- and openai-type providers must still
-// pick the one matching this entry — we just skip past mismatched
-// candidates instead of failing outright.
-function pickProviderForEntry<T extends { id: string; type: string }>(
-  candidates: T[],
-  entryType: "openai" | "anthropic",
-): { provider: T; mismatchedNames: string[] } | { error: string } {
-  const matched = candidates.find((p) => p.type === entryType);
-  if (matched) {
-    const mismatched = candidates.filter((p) => p.type !== entryType).map((p) => p.id);
-    return { provider: matched, mismatchedNames: mismatched };
-  }
-  if (candidates.length === 0) {
-    return { error: `No provider available for model` };
-  }
-  // Recommend the endpoint matching the candidate's type so the user
-  // knows which entry URL to switch to.
-  const recommendedEndpoint = candidates[0].type === "openai" ? "/v1" : "/anthropic";
-  return {
-    error: `Provider '${candidates[0].id}' is ${candidates[0].type}-only. Use the ${recommendedEndpoint} endpoint for ${candidates[0].type}-format providers.`,
-  };
+// protocol. See route-picker.ts for full logic.
+function pickForOpenAI(candidates: any[]): { providers: any[] } | { error: string } {
+  return pickProviderForEntry(candidates, "openai");
 }
 
 // OpenAI Chat Completions API. Only type=openai upstream providers are
@@ -59,9 +41,9 @@ openaiRoutes.post("/chat/completions", async (c) => {
   if ("error" in result) {
     return c.json({ error: result.error }, 400);
   }
-  const picked = pickProviderForEntry(result.providers, "openai");
+  const picked = pickForOpenAI(result.providers);
   if ("error" in picked) return c.json({ error: picked.error }, 400);
-  return forwardRequest(c, [picked.provider, ...result.providers.filter((p) => p.id !== picked.provider.id && p.type === "openai")], "/chat/completions");
+  return forwardRequest(c, picked.providers, "/chat/completions");
 });
 
 // OpenAI Responses API (used by codex CLI and modern OpenAI SDKs).
@@ -74,7 +56,7 @@ openaiRoutes.post("/responses", async (c) => {
   if ("error" in result) {
     return c.json({ error: result.error }, 400);
   }
-  const picked = pickProviderForEntry(result.providers, "openai");
+  const picked = pickForOpenAI(result.providers);
   if ("error" in picked) return c.json({ error: picked.error }, 400);
-  return forwardRequest(c, [picked.provider, ...result.providers.filter((p) => p.id !== picked.provider.id && p.type === "openai")], "/responses");
+  return forwardRequest(c, picked.providers, "/responses");
 });
