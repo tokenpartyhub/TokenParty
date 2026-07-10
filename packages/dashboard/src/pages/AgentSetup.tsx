@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, getToken, getRole, getUserName } from "../lib/api";
 
-// AgentSetup — copy-paste-ready Coding Agent configuration.
+// AgentSetup - copy-paste-ready Coding Agent configuration.
 //
 // Three things are auto-discovered:
 //   1. The TokenParty URL (from window.location.origin - the dashboard
@@ -23,7 +23,54 @@ type Protocol = "anthropic" | "openai";
 interface ProviderInfo { id: string; type: Protocol }
 interface AvailableModel { id: string; protocols: Set<Protocol> }
 
-function CopyButton({ value, label = "Copy" }: { value: string; label?: string }) {
+function maskToken(t: string): string {
+  if (t.length <= 10) return t.slice(0, 3) + "****";
+  return t.slice(0, 6) + "****" + t.slice(-4);
+}
+
+// --- Tiny inline SVG icons. We keep these in-file rather than pulling
+// in an icon library so the page ships with zero new dependencies. ---
+
+function ClipboardIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+        d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+    </svg>
+  );
+}
+
+function CheckIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+    </svg>
+  );
+}
+
+function LinkIcon({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+        d="M13.828 10.172a4 4 0 015.656 5.656l-3 3a4 4 0 01-5.656-5.656m-1.656-1.656a4 4 0 01-5.656-5.656l3-3a4 4 0 015.656 5.656" />
+    </svg>
+  );
+}
+
+function KeyIcon({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+        d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
+    </svg>
+  );
+}
+
+function CopyButton({ value, label = "Copy", className = "text-xs px-2 py-1 rounded bg-gray-700 text-white hover:bg-gray-600 inline-flex items-center gap-1.5" }: {
+  value: string;
+  label?: string;
+  className?: string;
+}) {
   const [copied, setCopied] = useState(false);
   return (
     <button
@@ -42,20 +89,11 @@ function CopyButton({ value, label = "Copy" }: { value: string; label?: string }
         setCopied(true);
         setTimeout(() => setCopied(false), 1200);
       }}
-      className="text-xs px-2 py-1 rounded bg-gray-700 text-white hover:bg-gray-600"
-    >{copied ? "Copied" : label}</button>
-  );
-}
-
-function CodeBlock({ value, language }: { value: string; language: "json" | "toml" | "sh" }) {
-  return (
-    <div className="relative">
-      <pre className="bg-gray-900 text-gray-100 rounded-md p-4 text-xs leading-relaxed overflow-x-auto whitespace-pre">{value}</pre>
-      <div className="absolute top-2 right-2 flex gap-2">
-        <span className="text-[10px] uppercase tracking-wide text-gray-300 bg-gray-700 rounded px-1.5 py-0.5">{language}</span>
-        <CopyButton value={value} />
-      </div>
-    </div>
+      className={"transition-colors duration-150 " + className}
+    >
+      {copied ? <CheckIcon /> : <ClipboardIcon />}
+      <span>{copied ? "Copied" : label}</span>
+    </button>
   );
 }
 
@@ -63,15 +101,145 @@ function InlineCode({ children }: { children: React.ReactNode }) {
   return <code className="bg-gray-100 text-gray-800 rounded px-1.5 py-0.5 text-[0.85em] font-mono">{children}</code>;
 }
 
-function maskToken(t: string): string {
-  if (t.length <= 10) return t.slice(0, 3) + "****";
-  return t.slice(0, 6) + "****" + t.slice(-4);
+function CodeBlock({ value, language }: { value: string; language: "json" | "toml" | "sh" }) {
+  return (
+    <div className="relative group">
+      <pre className="bg-gray-900 text-gray-100 rounded-md p-4 text-sm leading-relaxed overflow-x-auto whitespace-pre font-mono">{value}</pre>
+      <div className="absolute top-2 right-2 flex gap-2">
+        <span className="text-[10px] uppercase tracking-wide text-gray-300 bg-gray-700 rounded px-1.5 py-0.5">{language}</span>
+        <CopyButton value={value} className="text-xs px-2 py-1 rounded bg-gray-700 text-white hover:bg-gray-600 inline-flex items-center gap-1.5 opacity-70 group-hover:opacity-100 transition-opacity duration-150" />
+      </div>
+    </div>
+  );
 }
 
-// Fetches the available model list once on mount. The picker is
+// macOS-Terminal-styled block for the One-click tab. Three colored
+// dots on top, a copy button on the right, the command in the body.
+function TerminalBlock({ value, language = "sh" }: { value: string; language?: "sh" }) {
+  return (
+    <div className="rounded-md overflow-hidden border border-gray-800 shadow-md">
+      <div className="bg-gray-800 px-3 py-2 flex items-center justify-between">
+        <div className="flex items-center gap-1.5">
+          <span className="w-3 h-3 rounded-full bg-red-500"></span>
+          <span className="w-3 h-3 rounded-full bg-yellow-500"></span>
+          <span className="w-3 h-3 rounded-full bg-green-500"></span>
+          <span className="ml-2 text-xs text-gray-400 font-mono">terminal</span>
+        </div>
+        <CopyButton value={value} className="text-xs px-2 py-1 rounded bg-gray-700 text-white hover:bg-gray-600 inline-flex items-center gap-1.5" />
+      </div>
+      <pre className="bg-gray-900 text-green-300 p-4 text-sm font-mono overflow-x-auto whitespace-pre">{value}</pre>
+      <div className="bg-gray-800/50 px-3 py-1.5 text-[10px] text-gray-400 font-mono">[{language}]</div>
+    </div>
+  );
+}
+
+// Information card row - icon + label + value + copy. Used for URL
+// and Token display in the Common Setup section.
+function InfoCard({
+  icon, label, value, copyValue, copyLabel = "Copy",
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+  copyValue: string;
+  copyLabel?: string;
+}) {
+  return (
+    <div className="flex items-center gap-3 px-4 py-3 bg-white rounded-md border border-gray-200 hover:border-gray-300 transition-colors duration-150">
+      <div className="shrink-0 w-9 h-9 rounded-md bg-indigo-50 text-indigo-600 flex items-center justify-center">{icon}</div>
+      <div className="flex-1 min-w-0">
+        <div className="text-[10px] uppercase tracking-wider text-gray-500 font-semibold">{label}</div>
+        <div className="text-sm font-mono text-gray-800 truncate">{value}</div>
+      </div>
+      <CopyButton value={copyValue} label={copyLabel} />
+    </div>
+  );
+}
+
+// 3-step header indicator. Tells the user at a glance what they need
+// to do. The current step is the one matching what the page is
+// currently doing (we don\'t track an explicit step state - the
+// 3 steps all live on a single page and the user scrolls through
+// them, so we just show the progression).
+function StepGuide() {
+  const steps = [
+    { n: 1, title: "Confirm connection", desc: "URL and token are auto-filled from your browser session." },
+    { n: 2, title: "Choose models", desc: "Tick the models to expose; map Claude\'s slots if you use Claude Code." },
+    { n: 3, title: "Copy config or run script", desc: "Manual config for transparency; one-click curl to write it for you." },
+  ];
+  return (
+    <ol className="flex flex-col sm:flex-row gap-3 sm:gap-0 mt-4">
+      {steps.map((s, i) => (
+        <li key={s.n} className="flex-1 flex items-start gap-3 sm:pr-4">
+          <div className="shrink-0 w-7 h-7 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 text-white text-xs font-bold flex items-center justify-center shadow-sm">{s.n}</div>
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-medium text-gray-900">{s.title}</div>
+            <div className="text-xs text-gray-500 mt-0.5 leading-snug">{s.desc}</div>
+          </div>
+          {i < steps.length - 1 && (
+            <div className="hidden sm:block w-8 h-px bg-gray-200 self-center"></div>
+          )}
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+// Per-protocol color set, used by both the chip list and the agent
+// color strips. Keeps the visual language consistent.
+const PROTOCOL_THEME: Record<Protocol, { dot: string; chip: string; label: string; bg: string; text: string; ring: string }> = {
+  anthropic: {
+    dot: "bg-purple-500",
+    chip: "border-purple-200 bg-purple-50 text-purple-800",
+    label: "Anthropic",
+    bg: "bg-purple-50",
+    text: "text-purple-700",
+    ring: "ring-purple-200",
+  },
+  openai: {
+    dot: "bg-green-500",
+    chip: "border-green-200 bg-green-50 text-green-800",
+    label: "OpenAI",
+    bg: "bg-green-50",
+    text: "text-green-700",
+    ring: "ring-green-200",
+  },
+};
+
+// Bigger, hover-aware model chip with full-word protocol labels.
+function ModelChip({ model }: { model: AvailableModel }) {
+  return (
+    <span
+      className="inline-flex items-center gap-1.5 text-sm font-mono px-3 py-1.5 rounded-md border border-gray-200 bg-white text-gray-800 hover:border-indigo-300 hover:bg-indigo-50 hover:shadow-sm transition-all duration-150 cursor-default"
+      title={model.id}
+    >
+      <span className="truncate max-w-[16rem]">{model.id}</span>
+      {model.protocols.has("anthropic") && (
+        <span className={"shrink-0 text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded " + PROTOCOL_THEME.anthropic.chip}>Anthropic</span>
+      )}
+      {model.protocols.has("openai") && (
+        <span className={"shrink-0 text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded " + PROTOCOL_THEME.openai.chip}>OpenAI</span>
+      )}
+    </span>
+  );
+}
+
+function AvailableModelsList({ models }: { models: AvailableModel[] }) {
+  if (models.length === 0) {
+    return <p className="text-sm text-gray-400 italic">No models are configured. Add a provider in Settings first.</p>;
+  }
+  return (
+    <div className="flex flex-wrap gap-2">
+      {models.map((m) => <ModelChip key={m.id} model={m} />)}
+    </div>
+  );
+}
+
+// Fetches the available model list once on mount. The list is
 // purely informational on this page (OpenClaw/Codex configs use the
-// full list, and Claude Code\'s slot mapping gets its options from
-// the Anthropic subset) - no client-side selection state is needed.
+// user-curated subset, and Claude Code\'s slot mapping gets its
+// options from the Anthropic subset) - so we only need it as
+// "available to choose from".
 function useAvailableModels() {
   const [models, setModels] = useState<AvailableModel[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -108,40 +276,15 @@ function useAvailableModels() {
   return { models, error };
 }
 
-// Read-only model availability list for Common Setup. One row per
-// model, with a small protocol badge so the user can see at a glance
-// which agent each model can be used with.
-function AvailableModelsList({ models }: { models: AvailableModel[] }) {
-  if (models.length === 0) {
-    return <p className="text-sm text-gray-400 italic">No models are configured. Add a provider in Settings first.</p>;
-  }
-  return (
-    <div className="flex flex-wrap gap-2">
-      {models.map((m) => (
-        <span key={m.id} className="inline-flex items-center gap-1 text-xs font-mono px-2 py-1 rounded border border-gray-200 bg-gray-50 text-gray-800">
-          {m.id}
-          {m.protocols.has("anthropic") && (
-            <span className="text-[9px] uppercase tracking-wide text-purple-600 bg-purple-50 rounded px-1">A</span>
-          )}
-          {m.protocols.has("openai") && (
-            <span className="text-[9px] uppercase tracking-wide text-green-600 bg-green-50 rounded px-1">O</span>
-          )}
-        </span>
-      ))}
-    </div>
-  );
-}
-
-// Reusable checkbox list of model ids. Used by the OpenClaw and
-// Codex cards so the user can scope which models the generated
-// config + curl command actually reference. Default state is set
-// by the caller (we seed with everything available).
+// Per-card model selection list. Each model is a small card; clicking
+// anywhere on it toggles selection. Selected state has a clear visual
+// (border + background + checkmark in the top-right corner).
 function ModelCheckboxGroup({
   title, subtitle, color, models, selected, onChange,
 }: {
   title: string;
   subtitle: string;
-  color: "purple" | "green";
+  color: Protocol;
   models: string[];
   selected: Set<string>;
   onChange: (next: Set<string>) => void;
@@ -154,7 +297,7 @@ function ModelCheckboxGroup({
     );
   }
   const allOn = models.every((m) => selected.has(m));
-  const badge = color === "purple" ? "bg-purple-100 text-purple-700" : "bg-green-100 text-green-700";
+  const theme = PROTOCOL_THEME[color];
   const toggle = (id: string) => {
     const next = new Set(selected);
     if (next.has(id)) next.delete(id); else next.add(id);
@@ -166,27 +309,48 @@ function ModelCheckboxGroup({
   };
   return (
     <div>
-      <div className="flex items-center justify-between mb-2">
-        <div>
-          <span className={"text-xs px-2 py-0.5 rounded-full font-medium " + badge}>{title}</span>
-          <span className="ml-2 text-xs text-gray-500">{subtitle}</span>
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2">
+          <span className={"text-xs px-2 py-0.5 rounded-full font-semibold " + theme.chip}>{title}</span>
+          <span className="text-xs text-gray-500">{subtitle}</span>
         </div>
-        <button type="button" onClick={toggleAll} className="text-xs text-blue-600 hover:text-blue-800">
-          {allOn ? "Clear" : "Select all"}
+        <button
+          type="button"
+          onClick={toggleAll}
+          className={"text-xs font-medium px-3 py-1 rounded-md border transition-colors duration-150 " +
+            (allOn
+              ? "border-gray-300 text-gray-700 bg-white hover:bg-gray-50"
+              : "border-indigo-300 text-indigo-700 bg-indigo-50 hover:bg-indigo-100")}
+        >
+          {allOn ? "Clear all" : "Select all"}
         </button>
       </div>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-        {models.map((m) => (
-          <label key={m} className="flex items-center gap-2 px-3 py-2 border rounded hover:bg-gray-50 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={selected.has(m)}
-              onChange={() => toggle(m)}
-              className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-            />
-            <span className="text-sm font-mono text-gray-800 truncate">{m}</span>
-          </label>
-        ))}
+        {models.map((m) => {
+          const isOn = selected.has(m);
+          return (
+            <button
+              type="button"
+              key={m}
+              onClick={() => toggle(m)}
+              className={
+                "relative text-left px-3 py-2.5 rounded-md border-2 transition-all duration-150 " +
+                (isOn
+                  ? "border-indigo-500 " + theme.bg + " shadow-sm"
+                  : "border-gray-200 bg-white hover:border-gray-300 hover:bg-gray-50")
+              }
+            >
+              {isOn && (
+                <span className="absolute top-1.5 right-1.5 w-5 h-5 rounded-full bg-indigo-600 text-white flex items-center justify-center">
+                  <CheckIcon className="w-3 h-3" />
+                </span>
+              )}
+              <span className={"text-sm font-mono pr-6 block truncate " + (isOn ? "text-gray-900 font-medium" : "text-gray-700")}>
+                {m}
+              </span>
+            </button>
+          );
+        })}
       </div>
     </div>
   );
@@ -197,12 +361,12 @@ function ModelCheckboxGroup({
 // point each at one of the available Anthropic-protocol models.
 type ClaudeSlot = "main" | "sonnet" | "haiku" | "opus" | "reasoning";
 
-const CLAUDE_SLOTS: { id: ClaudeSlot; envVar: string; label: string; hint: string }[] = [
-  { id: "main", envVar: "ANTHROPIC_MODEL", label: "Main", hint: "Default when no model is given" },
-  { id: "sonnet", envVar: "ANTHROPIC_DEFAULT_SONNET_MODEL", label: "Sonnet preset", hint: "/model sonnet" },
-  { id: "haiku", envVar: "ANTHROPIC_DEFAULT_HAIKU_MODEL", label: "Haiku preset", hint: "/model haiku" },
-  { id: "opus", envVar: "ANTHROPIC_DEFAULT_OPUS_MODEL", label: "Opus preset", hint: "/model opus" },
-  { id: "reasoning", envVar: "ANTHROPIC_REASONING_MODEL", label: "Reasoning preset", hint: "extended thinking" },
+const CLAUDE_SLOTS: { id: ClaudeSlot; envVar: string; label: string; description: string }[] = [
+  { id: "main", envVar: "ANTHROPIC_MODEL", label: "Main model", description: "Used when no model is specified" },
+  { id: "sonnet", envVar: "ANTHROPIC_DEFAULT_SONNET_MODEL", label: "Sonnet preset", description: "Triggered by /model sonnet" },
+  { id: "haiku", envVar: "ANTHROPIC_DEFAULT_HAIKU_MODEL", label: "Haiku preset", description: "Triggered by /model haiku" },
+  { id: "opus", envVar: "ANTHROPIC_DEFAULT_OPUS_MODEL", label: "Opus preset", description: "Triggered by /model opus" },
+  { id: "reasoning", envVar: "ANTHROPIC_REASONING_MODEL", label: "Reasoning preset", description: "Used for extended thinking" },
 ];
 
 // Per-agent config generators. All take only the values they actually
@@ -263,12 +427,6 @@ function codexEnvSnippet(token: string) {
   return "export TOKENPARTY_API_KEY=\"" + token + "\"";
 }
 
-// One-click commands. The script tab is a single line: curl the
-// TokenParty instance\'s /setup/<agent> endpoint, which is expected
-// (future work) to read the user\'s existing config, patch only the
-// TokenParty fields, and leave the rest alone. We URL-encode values
-// for query-string safety.
-
 function urlEncode(s: string): string {
   return encodeURIComponent(s);
 }
@@ -303,7 +461,67 @@ function codexOneClickCommand(origin: string, token: string, modelIds: string[])
   return "curl -sSL \"" + origin + "/setup/codex?" + params.join("&") + "\" | bash";
 }
 
+// Per-agent accent color and short label for the header strip.
+const AGENT_THEME: Record<string, { gradient: string; textOn: string; dot: string; emoji: string; shortLabel: string }> = {
+  "Claude Code": { gradient: "from-orange-500 via-pink-500 to-purple-500", textOn: "text-white", dot: "bg-white", emoji: "C", shortLabel: "Claude Code" },
+  "OpenClaw": { gradient: "from-blue-500 to-cyan-500", textOn: "text-white", dot: "bg-white", emoji: "O", shortLabel: "OpenClaw" },
+  "Codex CLI": { gradient: "from-green-500 to-emerald-500", textOn: "text-white", dot: "bg-white", emoji: "X", shortLabel: "Codex CLI" },
+};
+
+function AgentHeader({ name, protocol }: { name: string; protocol: Protocol }) {
+  const theme = AGENT_THEME[name] ?? { gradient: "from-gray-500 to-gray-600", textOn: "text-white", dot: "bg-white", emoji: "?", shortLabel: name };
+  const proto = PROTOCOL_THEME[protocol];
+  return (
+    <div className={"rounded-t-lg bg-gradient-to-r " + theme.gradient + " px-5 py-3 flex items-center justify-between gap-3"}>
+      <div className="flex items-center gap-3 min-w-0">
+        <div className={"shrink-0 w-9 h-9 rounded-md bg-white/20 backdrop-blur-sm flex items-center justify-center font-bold text-lg " + theme.textOn}>
+          {theme.emoji}
+        </div>
+        <div className="min-w-0">
+          <h3 className={"text-lg font-semibold " + theme.textOn}>{theme.shortLabel}</h3>
+          <div className="flex items-center gap-1.5 mt-0.5">
+            <span className={"w-1.5 h-1.5 rounded-full " + theme.dot}></span>
+            <span className={"text-xs " + theme.textOn + " opacity-90"}>{proto.label} protocol</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 type AgentTab = "manual" | "oneclick";
+
+function AgentTabBar({ tab, onChange }: { tab: AgentTab; onChange: (t: AgentTab) => void }) {
+  const items: { id: AgentTab; label: string }[] = [
+    { id: "manual", label: "Manual config" },
+    { id: "oneclick", label: "One-click script" },
+  ];
+  return (
+    <div className="px-5 pt-4 flex gap-1 border-b border-gray-100 bg-gray-50/50">
+      {items.map((it) => (
+        <button
+          type="button"
+          key={it.id}
+          onClick={() => onChange(it.id)}
+          className={
+            "relative text-sm px-4 py-2.5 font-medium transition-colors duration-150 " +
+            (tab === it.id
+              ? "text-indigo-700"
+              : "text-gray-500 hover:text-gray-700")
+          }
+        >
+          {it.label}
+          <span
+            className={
+              "absolute left-0 right-0 bottom-0 h-0.5 rounded-t transition-all duration-200 " +
+              (tab === it.id ? "bg-indigo-600" : "bg-transparent")
+            }
+          ></span>
+        </button>
+      ))}
+    </div>
+  );
+}
 
 function AgentCard({
   name, protocol, configPath, configPathWindows, language,
@@ -325,42 +543,16 @@ function AgentCard({
   manualExtras?: React.ReactNode;
 }) {
   const [tab, setTab] = useState<AgentTab>("manual");
-  const badge = protocol === "anthropic"
-    ? "bg-purple-100 text-purple-700"
-    : "bg-green-100 text-green-700";
-  const protocolLabel = protocol === "anthropic" ? "Anthropic protocol" : "OpenAI protocol";
-
   return (
-    <div className="bg-white rounded-lg shadow">
-      <div className="p-5 border-b border-gray-100 flex items-start justify-between gap-4 flex-wrap">
-        <div>
-          <h3 className="text-lg font-semibold text-gray-900">{name}</h3>
-          <span className={"inline-block mt-1 text-xs px-2 py-0.5 rounded-full font-medium " + badge}>{protocolLabel}</span>
-        </div>
-      </div>
-
-      <div className="px-5 pt-4 flex gap-1 border-b border-gray-100">
-        <button
-          type="button"
-          onClick={() => setTab("manual")}
-          className={"text-sm px-4 py-2 -mb-px rounded-t border-b-2 " + (tab === "manual" ? "border-blue-600 text-blue-700 font-medium" : "border-transparent text-gray-500 hover:text-gray-700")}
-        >
-          Manual config
-        </button>
-        <button
-          type="button"
-          onClick={() => setTab("oneclick")}
-          className={"text-sm px-4 py-2 -mb-px rounded-t border-b-2 " + (tab === "oneclick" ? "border-blue-600 text-blue-700 font-medium" : "border-transparent text-gray-500 hover:text-gray-700")}
-        >
-          One-click script
-        </button>
-      </div>
+    <div className="bg-white rounded-lg shadow-sm hover:shadow-lg transition-shadow duration-200 overflow-hidden">
+      <AgentHeader name={name} protocol={protocol} />
+      <AgentTabBar tab={tab} onChange={setTab} />
 
       {tab === "manual" ? (
-        <div className="p-5 space-y-4">
+        <div className="p-5 space-y-5">
           {manualExtras}
           <div>
-            <div className="text-xs uppercase tracking-wide text-gray-500 mb-1">Config file path</div>
+            <div className="text-[10px] uppercase tracking-wider text-gray-500 font-semibold mb-2">Config file path</div>
             <div className="flex items-center gap-2 flex-wrap">
               <InlineCode>{configPath}</InlineCode>
               {configPathWindows && (
@@ -373,12 +565,12 @@ function AgentCard({
             </div>
           </div>
           <div>
-            <div className="text-xs uppercase tracking-wide text-gray-500 mb-1">Contents</div>
+            <div className="text-[10px] uppercase tracking-wider text-gray-500 font-semibold mb-2">Contents</div>
             <CodeBlock value={config} language={language} />
           </div>
           {envSnippet && (
             <div>
-              <div className="text-xs uppercase tracking-wide text-gray-500 mb-1">Shell environment</div>
+              <div className="text-[10px] uppercase tracking-wider text-gray-500 font-semibold mb-2">Shell environment</div>
               <CodeBlock value={envSnippet} language="sh" />
               <p className="text-xs text-gray-500 mt-2">
                 Add this line to your shell rc (<InlineCode>~/.zshrc</InlineCode>, <InlineCode>~/.bashrc</InlineCode>, etc.) so the Codex provider block above can read the token.
@@ -387,12 +579,15 @@ function AgentCard({
           )}
         </div>
       ) : (
-        <div className="p-5 space-y-3">
-          <p className="text-sm text-gray-600">{oneClickHint}</p>
-          <CodeBlock value={oneClickCommand} language="sh" />
-          <p className="text-xs text-gray-500">
-            The endpoint is expected to merge the TokenParty settings into the agent\'s existing config and leave everything else alone.
-          </p>
+        <div className="p-5 space-y-4">
+          <p className="text-sm text-gray-600 leading-relaxed">{oneClickHint}</p>
+          <TerminalBlock value={oneClickCommand} language="sh" />
+          <div className="flex items-start gap-2 px-3 py-2.5 bg-amber-50 border border-amber-200 rounded-md">
+            <span className="shrink-0 w-5 h-5 rounded-full bg-amber-500 text-white text-xs font-bold flex items-center justify-center mt-0.5">!</span>
+            <div className="text-xs text-amber-900">
+              <span className="font-semibold">Copy &amp; run:</span> the command above contacts your TokenParty instance at <InlineCode>{`{origin}`}/setup/&lt;agent&gt;</InlineCode>. Make sure that endpoint is reachable from the machine you\'re setting up.
+            </div>
+          </div>
         </div>
       )}
     </div>
@@ -413,8 +608,8 @@ export default function AgentSetup() {
     setToken(getToken());
   }, []);
 
-  // Available models filtered by protocol. Used by OpenClaw\'s config
-  // (anthropic) and Claude Code\'s slot dropdowns (anthropic).
+  // Available models filtered by protocol. Drives both the chip list
+  // and the per-card selection state.
   const availableAnthropic = (models ?? []).filter((m) => m.protocols.has("anthropic")).map((m) => m.id);
   const availableOpenai = (models ?? []).filter((m) => m.protocols.has("openai")).map((m) => m.id);
 
@@ -435,7 +630,7 @@ export default function AgentSetup() {
 
   // OpenClaw + Codex model selection. Both default to "everything
   // available" the moment the model list first arrives, and stay
-  // under the user's control afterwards. The selected set drives the
+  // under the user\'s control afterwards. The selected set drives the
   // rendered config body (OpenClaw only) and the curl command for
   // both agents.
   const [openclawSelected, setOpenclawSelected] = useState<Set<string>>(new Set());
@@ -461,11 +656,12 @@ export default function AgentSetup() {
 
   return (
     <div className="max-w-4xl mx-auto space-y-6">
-      <header>
+      <header className="bg-white rounded-lg shadow-sm p-6 border-l-4 border-indigo-500">
         <h2 className="text-2xl font-bold text-gray-900">Agent Setup</h2>
         <p className="text-sm text-gray-600 mt-1">
           Connect Claude Code, OpenClaw, or Codex CLI to TokenParty. Confirm the connection, tweak Claude\'s 5 model slots if needed, then copy the config or run the one-click script.
         </p>
+        <StepGuide />
       </header>
 
       {!loggedIn && (
@@ -474,45 +670,51 @@ export default function AgentSetup() {
         </div>
       )}
 
-      <section className="bg-white rounded-lg shadow p-6 space-y-4">
+      <section className="bg-gradient-to-br from-indigo-50 via-white to-purple-50 rounded-lg shadow-sm p-6 border border-indigo-100 space-y-5">
         <div>
           <h3 className="text-lg font-semibold text-gray-900">Common Setup</h3>
           <p className="text-xs text-gray-500 mt-1">
             Both values below are auto-detected. You should not need to change them.
           </p>
         </div>
-        <div>
-          <div className="text-xs uppercase tracking-wide text-gray-500 mb-1">TokenParty URL</div>
-          <div className="flex items-center gap-2">
-            <InlineCode>{origin || "(loading)"}</InlineCode>
-            <CopyButton value={origin} label="Copy URL" />
-          </div>
-          <p className="text-xs text-gray-500 mt-1">
-            Read from <InlineCode>window.location.origin</InlineCode>. If you are behind a reverse proxy and the dashboard URL differs from the externally-visible URL, update your proxy config so they match.
-          </p>
-        </div>
-        <div>
-          <div className="text-xs uppercase tracking-wide text-gray-500 mb-1">
-            API token {userLabel ? <span className="text-gray-400 normal-case">- {userLabel}</span> : null}
-          </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <InfoCard
+            icon={<LinkIcon className="w-4 h-4" />}
+            label="TokenParty URL"
+            value={origin || "(loading)"}
+            copyValue={origin}
+            copyLabel="Copy URL"
+          />
           {loggedIn ? (
-            <div className="flex items-center gap-2">
-              <InlineCode>{maskToken(token!)}</InlineCode>
-              <CopyButton value={token!} label="Copy token" />
-            </div>
+            <InfoCard
+              icon={<KeyIcon className="w-4 h-4" />}
+              label={"API token" + (userLabel ? " - " + userLabel : "")}
+              value={maskToken(token!)}
+              copyValue={token!}
+              copyLabel="Copy token"
+            />
           ) : (
-            <div className="text-sm text-gray-400 italic">No token in storage. Sign in to populate.</div>
+            <div className="flex items-center gap-3 px-4 py-3 bg-white rounded-md border border-dashed border-gray-300">
+              <div className="shrink-0 w-9 h-9 rounded-md bg-gray-100 text-gray-400 flex items-center justify-center"><KeyIcon className="w-4 h-4" /></div>
+              <div className="flex-1 min-w-0">
+                <div className="text-[10px] uppercase tracking-wider text-gray-500 font-semibold">API token</div>
+                <div className="text-sm text-gray-400 italic">No token in storage. Sign in to populate.</div>
+              </div>
+            </div>
           )}
         </div>
         <div>
-          <div className="text-xs uppercase tracking-wide text-gray-500 mb-1">Available models</div>
+          <div className="text-[10px] uppercase tracking-wider text-gray-500 font-semibold mb-2">Available models</div>
           {modelsError && <p className="text-sm text-red-700">Could not load models: {modelsError}</p>}
           {models === null && !modelsError && <p className="text-sm text-gray-400">Loading models...</p>}
           {models && (
             <>
               <AvailableModelsList models={models} />
-              <p className="text-xs text-gray-500 mt-2">
-                <span className="text-purple-600 font-semibold">A</span> = Anthropic protocol (Claude Code, OpenClaw). <span className="text-green-600 font-semibold">O</span> = OpenAI protocol (Codex CLI). Models you can route to TokenParty are the ones listed here.
+              <p className="text-xs text-gray-500 mt-3">
+                <span className={"text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded mr-1.5 " + PROTOCOL_THEME.anthropic.chip}>Anthropic</span>
+                routed by Claude Code and OpenClaw.
+                <span className={"text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded mx-1.5 " + PROTOCOL_THEME.openai.chip}>OpenAI</span>
+                routed by Codex CLI.
               </p>
             </>
           )}
@@ -524,7 +726,7 @@ export default function AgentSetup() {
           Agent configs will render once you are signed in.
         </div>
       ) : (
-        <section className="space-y-4">
+        <section className="space-y-5">
           <h3 className="text-lg font-semibold text-gray-900">Agent configs</h3>
 
           <AgentCard
@@ -538,31 +740,32 @@ export default function AgentSetup() {
             oneClickHint={"Run this in your terminal. The endpoint reads your existing settings.json, patches only the TokenParty fields (auth token, base URL, and the 5 model slots), and leaves the rest of your config alone."}
             manualExtras={
               <div>
-                <div className="text-xs uppercase tracking-wide text-gray-500 mb-2">
-                  Model mapping <span className="text-gray-400 normal-case">- bind each Claude Code preset slot to a TokenParty model</span>
+                <div className="flex items-center gap-2 mb-3">
+                  <span className="text-[10px] uppercase tracking-wider text-gray-500 font-semibold">Model mapping</span>
+                  <span className="text-xs text-gray-400">bind each Claude Code preset slot to a TokenParty model</span>
                 </div>
                 {availableAnthropic.length === 0 ? (
                   <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2">
                     No Anthropic-protocol models are available. Add a provider in Settings first.
                   </p>
                 ) : (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="space-y-3">
                     {CLAUDE_SLOTS.map((slot) => (
                       <label key={slot.id} className="block">
-                        <div className="flex items-baseline justify-between">
-                          <span className="text-xs font-medium text-gray-700">{slot.label}</span>
-                          <span className="text-[10px] font-mono text-gray-400">{slot.hint}</span>
+                        <div className="flex items-baseline justify-between mb-1">
+                          <span className="text-sm font-medium text-gray-800">{slot.label}</span>
+                          <span className="text-[10px] font-mono text-gray-400">{slot.envVar}</span>
                         </div>
                         <select
                           value={claudeSlots[slot.id] || ""}
                           onChange={(e) => setClaudeSlots({ ...claudeSlots, [slot.id]: e.target.value })}
-                          className="mt-1 w-full border rounded px-2 py-1.5 text-sm font-mono focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+                          className="w-full border-2 border-gray-200 rounded-md px-3 py-2 text-sm font-mono bg-white hover:border-gray-300 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none transition-colors duration-150 cursor-pointer"
                         >
                           {availableAnthropic.map((m) => (
                             <option key={m} value={m}>{m}</option>
                           ))}
                         </select>
-                        <div className="mt-0.5 text-[11px] font-mono text-gray-400 truncate">{slot.envVar}</div>
+                        <p className="mt-1 text-xs text-gray-500 leading-snug">{slot.description}</p>
                       </label>
                     ))}
                   </div>
@@ -582,13 +785,14 @@ export default function AgentSetup() {
             oneClickHint={"Run this in your terminal. The endpoint merges the TokenParty provider block into models.providers[\"token-party\"] of your existing openclaw.json, leaving other providers and settings intact."}
             manualExtras={
               <div>
-                <div className="text-xs uppercase tracking-wide text-gray-500 mb-2">
-                  Models <span className="text-gray-400 normal-case">- which Anthropic-protocol models to include in the providers block</span>
+                <div className="flex items-center gap-2 mb-3">
+                  <span className="text-[10px] uppercase tracking-wider text-gray-500 font-semibold">Models</span>
+                  <span className="text-xs text-gray-400">which Anthropic-protocol models to include in the providers block</span>
                 </div>
                 <ModelCheckboxGroup
                   title="Anthropic protocol"
                   subtitle="visible to OpenClaw"
-                  color="purple"
+                  color="anthropic"
                   models={availableAnthropic}
                   selected={openclawSelected}
                   onChange={setOpenclawSelected}
@@ -609,18 +813,19 @@ export default function AgentSetup() {
             oneClickHint={"Run this in your terminal. The endpoint writes config.toml to the standard Codex path AND exports TOKENPARTY_API_KEY into the current shell so the next codex invocation works immediately."}
             manualExtras={
               <div>
-                <div className="text-xs uppercase tracking-wide text-gray-500 mb-2">
-                  Models <span className="text-gray-400 normal-case">- which OpenAI-protocol models to register with the /setup endpoint</span>
+                <div className="flex items-center gap-2 mb-3">
+                  <span className="text-[10px] uppercase tracking-wider text-gray-500 font-semibold">Models</span>
+                  <span className="text-xs text-gray-400">which OpenAI-protocol models to register with the /setup endpoint</span>
                 </div>
                 <ModelCheckboxGroup
                   title="OpenAI protocol"
                   subtitle="visible to Codex CLI"
-                  color="green"
+                  color="openai"
                   models={availableOpenai}
                   selected={codexSelected}
                   onChange={setCodexSelected}
                 />
-                <p className="text-xs text-gray-500 mt-2">
+                <p className="text-xs text-gray-500 mt-3 leading-relaxed">
                   Codex\'s config.toml does not list models directly - they are picked at runtime via <InlineCode>codex --model &lt;id&gt;</InlineCode>. The selection above drives what gets passed to the setup endpoint; the displayed config.toml is the same minimal provider block.
                 </p>
               </div>
