@@ -423,6 +423,7 @@ function codexConfig(origin: string, modelIds: string[]) {
     "name = \"TokenParty\"\n" +
     "base_url = \"" + origin + "/v1\"\n" +
     "env_key = \"TOKENPARTY_API_KEY\"\n" +
+    "wire_api = \"responses\"\n" +
     "requires_openai_auth = false\n" +
     "request_max_retries = 4\n" +
     "stream_max_retries = 10\n" +
