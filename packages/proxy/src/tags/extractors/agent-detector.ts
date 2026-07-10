@@ -39,11 +39,17 @@ const rules: AgentRule[] = [
     },
   },
   {
-    match: (ua) => ua.includes("codex-cli") || ua.includes("codex/"),
+    // Codex ships multiple binaries with distinct User-Agent strings:
+    //   - "codex-cli/..."        older CLI builds
+    //   - "codex/..."            some intermediate versions
+    //   - "codex-tui/..."        current TUI binary (≥0.144)
+    //   - "codex_cli_rs/..."     current headless binary (≥0.144)
+    // The separator can be `-`, `_`, or `/`, so match any of them.
+    match: (ua) => /codex[-_/](?:cli|tui|cli_rs)?/i.test(ua) || ua.includes("codex-cli"),
     agent: "codex",
     extractMeta: (ua) => {
       const meta: Record<string, string> = {};
-      const versionMatch = ua.match(/codex[-/]([^\s(]+)/);
+      const versionMatch = ua.match(/codex[-_/]([^\s(]+)/);
       if (versionMatch) meta.agent_version = versionMatch[1];
       return meta;
     },
