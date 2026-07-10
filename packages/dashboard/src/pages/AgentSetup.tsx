@@ -610,7 +610,11 @@ export default function AgentSetup() {
 
   useEffect(() => {
     if (typeof window !== "undefined") {
-      setOrigin(window.location.origin);
+      // In dev mode the dashboard Vite server runs on :3457 but the
+      // TokenParty API gateway is on :3456. Rewrite the origin so the
+      // configs we generate point at the real service.
+      const raw = window.location.origin;
+      setOrigin(raw.replace(":3457", ":3456"));
     }
     setToken(getToken());
   }, []);

@@ -9,6 +9,9 @@ export default defineConfig({
     allowedHosts: true,
     proxy: {
       "/api": "http://localhost:3456",
+      "/setup": "http://localhost:3456",
+      "/anthropic": "http://localhost:3456",
+      "/v1": "http://localhost:3456",
     },
   },
 });
