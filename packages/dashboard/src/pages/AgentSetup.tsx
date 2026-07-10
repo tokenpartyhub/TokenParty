@@ -411,7 +411,14 @@ function openClawConfig(origin: string, token: string, modelIds: string[]) {
     "}";
 }
 
-function codexConfig(origin: string) {
+function codexConfig(origin: string, modelIds: string[]) {
+  // TOML list-of-strings for the provider\'s available models. The
+  // selection above drives this directly. Empty array renders as
+  // `models = []` (the user just unchecked everything) - emitting
+  // `[""]` would be invalid TOML.
+  const modelsLine = modelIds.length === 0
+    ? "models = []"
+    : "models = [\"" + modelIds.join("\", \"") + "\"]";
   return "[model_providers.tokenparty]\n" +
     "name = \"TokenParty\"\n" +
     "base_url = \"" + origin + "/v1\"\n" +
@@ -420,7 +427,8 @@ function codexConfig(origin: string) {
     "requires_openai_auth = false\n" +
     "request_max_retries = 4\n" +
     "stream_max_retries = 10\n" +
-    "stream_idle_timeout_ms = 300000";
+    "stream_idle_timeout_ms = 300000\n" +
+    modelsLine;
 }
 
 function codexEnvSnippet(token: string) {
@@ -807,7 +815,7 @@ export default function AgentSetup() {
             configPath="~/.codex/config.toml"
             configPathWindows="%USERPROFILE%\\.codex\\config.toml"
             language="toml"
-            config={codexConfig(origin)}
+            config={codexConfig(origin, [...codexSelected])}
             envSnippet={codexEnvSnippet(token!)}
             oneClickCommand={codexOneClickCommand(origin, token!, [...codexSelected])}
             oneClickHint={"Run this in your terminal. The endpoint writes config.toml to the standard Codex path AND exports TOKENPARTY_API_KEY into the current shell so the next codex invocation works immediately."}
@@ -825,9 +833,6 @@ export default function AgentSetup() {
                   selected={codexSelected}
                   onChange={setCodexSelected}
                 />
-                <p className="text-xs text-gray-500 mt-3 leading-relaxed">
-                  Codex\'s config.toml does not list models directly - they are picked at runtime via <InlineCode>codex --model &lt;id&gt;</InlineCode>. The selection above drives what gets passed to the setup endpoint; the displayed config.toml is the same minimal provider block.
-                </p>
               </div>
             }
           />
