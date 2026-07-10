@@ -3,6 +3,7 @@ import { Routes, Route, NavLink } from "react-router-dom";
 import UserDashboard from "../pages/UserDashboard";
 import Requests from "../pages/Requests";
 import Settings from "../pages/Settings";
+import AgentSetup from "../pages/AgentSetup";
 import { clearAuth, getRole, getUserName } from "../lib/api";
 
 const navItems = [
@@ -13,6 +14,11 @@ const navItems = [
   {
     to: "/requests", label: "Requests",
     iconPath: "M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4",
+  },
+  {
+    to: "/agent-setup", label: "Agent Setup",
+    // puzzle-piece: agent = a piece the user plugs in
+    iconPath: "M11 4a2 2 0 114 0v1h2a2 2 0 012 2v2h1a2 2 0 110 4h-1v2a2 2 0 01-2 2h-2v-1a2 2 0 10-4 0v1H7a2 2 0 01-2-2v-2H4a2 2 0 110-4h1V7a2 2 0 012-2h2V4z",
   },
   {
     to: "/settings", label: "Settings",
@@ -110,6 +116,7 @@ export default function UserLayout() {
         <Routes>
           <Route path="/" element={<UserDashboard />} />
           <Route path="/requests" element={<Requests mode="user" />} />
+          <Route path="/agent-setup" element={<AgentSetup />} />
           <Route path="/settings" element={<Settings mode="user" />} />
         </Routes>
       </main>

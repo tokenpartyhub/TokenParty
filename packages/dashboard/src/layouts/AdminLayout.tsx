@@ -5,6 +5,7 @@ import Requests from "../pages/Requests";
 import Providers from "../pages/Providers";
 import Users from "../pages/Users";
 import Settings from "../pages/Settings";
+import AgentSetup from "../pages/AgentSetup";
 import { clearAuth, getRole } from "../lib/api";
 
 const navItems = [
@@ -23,6 +24,10 @@ const navItems = [
   {
     to: "/admin/users", label: "Users",
     iconPath: "M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z",
+  },
+  {
+    to: "/admin/agent-setup", label: "Agent Setup",
+    iconPath: "M11 4a2 2 0 114 0v1h2a2 2 0 012 2v2h1a2 2 0 110 4h-1v2a2 2 0 01-2 2h-2v-1a2 2 0 10-4 0v1H7a2 2 0 01-2-2v-2H4a2 2 0 110-4h1V7a2 2 0 012-2h2V4z",
   },
   {
     to: "/admin/settings", label: "Settings",
@@ -119,6 +124,7 @@ export default function AdminLayout() {
           <Route path="/admin/requests" element={<Requests mode="admin" />} />
           <Route path="/admin/providers" element={<Providers />} />
           <Route path="/admin/users" element={<Users />} />
+          <Route path="/admin/agent-setup" element={<AgentSetup />} />
           <Route path="/admin/settings" element={<Settings mode="admin" />} />
         </Routes>
       </main>
