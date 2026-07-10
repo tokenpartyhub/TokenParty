@@ -235,11 +235,17 @@ function AvailableModelsList({ models }: { models: AvailableModel[] }) {
   );
 }
 
-// Fetches the available model list once on mount. The list is
-// purely informational on this page (OpenClaw/Codex configs use the
-// user-curated subset, and Claude Code\'s slot mapping gets its
-// options from the Anthropic subset) - so we only need it as
-// "available to choose from".
+// Fetches the available model list once on mount. Two paths:
+//
+//   - Admin users: hit the rich admin endpoints (GET /api/models +
+//     GET /api/providers) and derive each model\'s protocol by
+//     joining model -> providers -> provider type.
+//   - Non-admin users: the admin endpoints return 401, which would
+//     trigger request()\'s auto-logout. We detect the role up front
+//     and call GET /api/user/models instead - that endpoint was
+//     widened to include the protocols field per model so the page
+//     has enough info to render the protocol badges and per-agent
+//     model pickers.
 function useAvailableModels() {
   const [models, setModels] = useState<AvailableModel[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -247,25 +253,32 @@ function useAvailableModels() {
     let cancelled = false;
     (async () => {
       try {
-        const [rawModels, rawProviders] = await Promise.all([
-          api.getModels() as Promise<{ id: string; providers: string[] }[]>,
-          api.getProviders() as Promise<ProviderInfo[]>,
-        ]);
-        if (cancelled) return;
-        const providerById = new Map(rawProviders.map((p) => [p.id, p]));
-        const seen = new Map<string, Set<Protocol>>();
-        for (const m of rawModels) {
-          for (const pid of m.providers) {
-            const p = providerById.get(pid);
-            if (!p) continue;
-            const set = seen.get(m.id) ?? new Set<Protocol>();
-            set.add(p.type);
-            seen.set(m.id, set);
+        let out: AvailableModel[];
+        if (getRole() === "admin") {
+          const [rawModels, rawProviders] = await Promise.all([
+            api.getModels() as Promise<{ id: string; providers: string[] }[]>,
+            api.getProviders() as Promise<ProviderInfo[]>,
+          ]);
+          const providerById = new Map(rawProviders.map((p) => [p.id, p]));
+          const seen = new Map<string, Set<Protocol>>();
+          for (const m of rawModels) {
+            for (const pid of m.providers) {
+              const p = providerById.get(pid);
+              if (!p) continue;
+              const set = seen.get(m.id) ?? new Set<Protocol>();
+              set.add(p.type);
+              seen.set(m.id, set);
+            }
           }
+          out = [...seen.entries()].map(([id, protocols]) => ({ id, protocols }));
+        } else {
+          // User-portal endpoint. Already returns { id, protocols[] } so
+          // we just need to wrap the string array in a Set.
+          const raw = await api.getUserModels() as { id: string; protocols: string[] }[];
+          out = raw.map((m) => ({ id: m.id, protocols: new Set(m.protocols as Protocol[]) }));
         }
-        const out: AvailableModel[] = [...seen.entries()]
-          .map(([id, protocols]) => ({ id, protocols }))
-          .sort((a, b) => a.id.localeCompare(b.id));
+        if (cancelled) return;
+        out.sort((a, b) => a.id.localeCompare(b.id));
         setModels(out);
       } catch (e: any) {
         if (!cancelled) setError(e.message ?? "Failed to load models");

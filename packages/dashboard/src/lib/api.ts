@@ -162,7 +162,7 @@ export const api = {
     return request<{ data: any[]; total: number }>(`/user/requests?${search}`);
   },
   getUserRequestDetail: (id: string) => request<any>(`/user/requests/${id}`),
-  getUserModels: () => request<{ id: string }[]>("/user/models"),
+  getUserModels: () => request<{ id: string; protocols: string[] }[]>("/user/models"),
 
   // --- Auth ---
   verifyToken: (token: string) =>

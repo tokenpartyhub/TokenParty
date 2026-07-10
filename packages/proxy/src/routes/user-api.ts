@@ -21,15 +21,28 @@ userApiRoutes.use("/*", async (c, next) => {
 });
 
 userApiRoutes.get("/models", (c) => {
+  // Per-model protocols: a model is routable via each provider that
+  // exposes it, so the same model id can appear under multiple
+  // protocols (e.g. served by both an anthropic and an openai
+  // provider). The Agent Setup page consumes this list directly to
+  // render protocol badges and per-agent model pickers - non-admin
+  // users hit this endpoint because GET /api/models is admin-only.
   const config = getConfig();
-  const models = new Set<string>();
+  const byId = new Map<string, Set<string>>();
   for (const p of config.providers) {
     if (!p.enabled) continue;
     for (const m of p.models) {
-      models.add(getModelId(m));
+      const id = getModelId(m);
+      const set = byId.get(id) ?? new Set<string>();
+      set.add(p.type);
+      byId.set(id, set);
     }
   }
-  return c.json([...models].map((id) => ({ id })));
+  return c.json(
+    [...byId.entries()]
+      .map(([id, protocols]) => ({ id, protocols: [...protocols] }))
+      .sort((a, b) => a.id.localeCompare(b.id))
+  );
 });
 
 userApiRoutes.get("/profile", (c) => {
