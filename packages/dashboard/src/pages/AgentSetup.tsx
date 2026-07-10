@@ -1,29 +1,27 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { api, getToken, getRole, getUserName } from "../lib/api";
 
 // AgentSetup — copy-paste-ready Coding Agent configuration.
 //
-// Two facts are auto-discovered:
-//   1. The TokenParty URL — from window.location.origin (the dashboard
+// Three things are auto-discovered:
+//   1. The TokenParty URL (from window.location.origin - the dashboard
 //      itself is served by the same instance the agent will talk to).
-//   2. The user's API token — pulled from the existing auth storage
-//      via getToken(). No more pasting tokens into a sidebar input.
+//   2. The user\'s API token (from auth storage via getToken()).
+//   3. The list of models TokenParty currently routes for, fetched via
+//      api.getModels() + api.getProviders() so each model is tagged
+//      with the protocols (anthropic / openai) it can be served over.
 //
-// The user only has to (a) confirm those two values and (b) tick the
-// models they want to expose. Each agent card then renders the exact
-// file contents the user needs to drop onto disk.
+// The user only has to:
+//   - confirm the connection details
+//   - tweak Claude Code\'s 5 model slots (only Claude needs explicit
+//     slot-to-model mapping; OpenClaw and Codex take the available list
+//     as-is)
+//   - copy the resulting config or the one-line curl script
 
 type Protocol = "anthropic" | "openai";
 
-interface ProviderInfo {
-  id: string;
-  type: Protocol;
-}
-
-interface AvailableModel {
-  id: string;
-  protocols: Set<Protocol>;
-}
+interface ProviderInfo { id: string; type: Protocol }
+interface AvailableModel { id: string; protocols: Set<Protocol> }
 
 function CopyButton({ value, label = "Copy" }: { value: string; label?: string }) {
   const [copied, setCopied] = useState(false);
@@ -31,9 +29,7 @@ function CopyButton({ value, label = "Copy" }: { value: string; label?: string }
     <button
       type="button"
       onClick={async () => {
-        try {
-          await navigator.clipboard.writeText(value);
-        } catch {
+        try { await navigator.clipboard.writeText(value); } catch {
           const ta = document.createElement("textarea");
           ta.value = value;
           ta.style.position = "fixed";
@@ -47,18 +43,14 @@ function CopyButton({ value, label = "Copy" }: { value: string; label?: string }
         setTimeout(() => setCopied(false), 1200);
       }}
       className="text-xs px-2 py-1 rounded bg-gray-700 text-white hover:bg-gray-600"
-    >
-      {copied ? "Copied" : label}
-    </button>
+    >{copied ? "Copied" : label}</button>
   );
 }
 
 function CodeBlock({ value, language }: { value: string; language: "json" | "toml" | "sh" }) {
   return (
     <div className="relative">
-      <pre className="bg-gray-900 text-gray-100 rounded-md p-4 text-xs leading-relaxed overflow-x-auto whitespace-pre">
-        {value}
-      </pre>
+      <pre className="bg-gray-900 text-gray-100 rounded-md p-4 text-xs leading-relaxed overflow-x-auto whitespace-pre">{value}</pre>
       <div className="absolute top-2 right-2 flex gap-2">
         <span className="text-[10px] uppercase tracking-wide text-gray-300 bg-gray-700 rounded px-1.5 py-0.5">{language}</span>
         <CopyButton value={value} />
@@ -71,35 +63,18 @@ function InlineCode({ children }: { children: React.ReactNode }) {
   return <code className="bg-gray-100 text-gray-800 rounded px-1.5 py-0.5 text-[0.85em] font-mono">{children}</code>;
 }
 
-// Mask the middle of an auth token so a screenshot doesn't leak it. We
-// keep the prefix (so users can still tell which token it is from the
-// token list) and the last 4 chars.
 function maskToken(t: string): string {
   if (t.length <= 10) return t.slice(0, 3) + "****";
   return t.slice(0, 6) + "****" + t.slice(-4);
 }
 
-type ClaudeSlot = "main" | "sonnet" | "haiku" | "opus" | "reasoning";
-
-const CLAUDE_SLOTS: { id: ClaudeSlot; envVar: string; label: string; hint: string }[] = [
-  { id: "main", envVar: "ANTHROPIC_MODEL", label: "Main", hint: "Default when no model is given" },
-  { id: "sonnet", envVar: "ANTHROPIC_DEFAULT_SONNET_MODEL", label: "Sonnet preset", hint: "/model sonnet" },
-  { id: "haiku", envVar: "ANTHROPIC_DEFAULT_HAIKU_MODEL", label: "Haiku preset", hint: "/model haiku" },
-  { id: "opus", envVar: "ANTHROPIC_DEFAULT_OPUS_MODEL", label: "Opus preset", hint: "/model opus" },
-  { id: "reasoning", envVar: "ANTHROPIC_REASONING_MODEL", label: "Reasoning preset", hint: "extended thinking" },
-];
-
-
-// AvailableModel: the unified model list rendered in the picker.
-// Built by joining api.getModels() (model id + provider ids) with
-// api.getProviders() (provider id + protocol type). The picker needs
-// to know which protocol each model can be served over, so a model
-// served by both kinds of providers will show up in both groups.
-
+// Fetches the available model list once on mount. The picker is
+// purely informational on this page (OpenClaw/Codex configs use the
+// full list, and Claude Code\'s slot mapping gets its options from
+// the Anthropic subset) - no client-side selection state is needed.
 function useAvailableModels() {
   const [models, setModels] = useState<AvailableModel[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -130,287 +105,149 @@ function useAvailableModels() {
     })();
     return () => { cancelled = true; };
   }, []);
-
   return { models, error };
 }
 
-
-function ModelPicker({
-  models,
-  selected,
-  onToggle,
-}: {
-  models: AvailableModel[];
-  selected: Set<string>;
-  onToggle: (id: string) => void;
-}) {
-  const anthropic = models.filter((m) => m.protocols.has("anthropic"));
-  const openai = models.filter((m) => m.protocols.has("openai"));
-  const both = models.filter((m) => m.protocols.has("anthropic") && m.protocols.has("openai"));
-
-  const selectAllOfProtocol = (protocol: Protocol) => {
-    const target = protocol === "anthropic" ? anthropic : openai;
-    const allSelected = target.every((m) => selected.has(m.id));
-    const next = new Set(selected);
-    for (const m of target) {
-      if (allSelected) next.delete(m.id); else next.add(m.id);
-    }
-    onToggle("__replace__" + JSON.stringify([...next]));
-  };
-
-  const onToggleAdapter = (id: string) => {
-    if (id.startsWith("__replace__")) {
-      // Special signal from selectAllOfProtocol — replace the whole set.
-      const arr = JSON.parse(id.slice("__replace__".length));
-      onToggle("__replace_set__" + JSON.stringify(arr));
-      return;
-    }
-    const next = new Set(selected);
-    if (next.has(id)) next.delete(id); else next.add(id);
-    onToggle("__replace_set__" + JSON.stringify([...next]));
-  };
-
+// Read-only model availability list for Common Setup. One row per
+// model, with a small protocol badge so the user can see at a glance
+// which agent each model can be used with.
+function AvailableModelsList({ models }: { models: AvailableModel[] }) {
+  if (models.length === 0) {
+    return <p className="text-sm text-gray-400 italic">No models are configured. Add a provider in Settings first.</p>;
+  }
   return (
-    <div className="bg-white rounded-lg shadow p-6 space-y-5">
-      <div>
-        <h3 className="text-lg font-semibold text-gray-900">Models</h3>
-        <p className="text-sm text-gray-600 mt-1">
-          Tick the models you want to expose. They will be embedded into the agent configs below. TokenParty handles routing — the model names you pick here are what you pass to the agent CLI.
-        </p>
-      </div>
-
-      {both.length > 0 && (
-        <p className="text-xs text-gray-500">
-          {both.length} model(s) are served by both Anthropic and OpenAI providers. They appear in both groups.
-        </p>
-      )}
-
-      <ModelGroup
-        title="Anthropic protocol"
-        subtitle="Visible to Claude Code and OpenClaw"
-        color="purple"
-        models={anthropic}
-        selected={selected}
-        onSelectAll={() => selectAllOfProtocol("anthropic")}
-        onToggle={onToggleAdapter}
-      />
-      <ModelGroup
-        title="OpenAI protocol"
-        subtitle="Visible to Codex CLI"
-        color="green"
-        models={openai}
-        selected={selected}
-        onSelectAll={() => selectAllOfProtocol("openai")}
-        onToggle={onToggleAdapter}
-      />
+    <div className="flex flex-wrap gap-2">
+      {models.map((m) => (
+        <span key={m.id} className="inline-flex items-center gap-1 text-xs font-mono px-2 py-1 rounded border border-gray-200 bg-gray-50 text-gray-800">
+          {m.id}
+          {m.protocols.has("anthropic") && (
+            <span className="text-[9px] uppercase tracking-wide text-purple-600 bg-purple-50 rounded px-1">A</span>
+          )}
+          {m.protocols.has("openai") && (
+            <span className="text-[9px] uppercase tracking-wide text-green-600 bg-green-50 rounded px-1">O</span>
+          )}
+        </span>
+      ))}
     </div>
   );
 }
 
-function ModelGroup({
-  title, subtitle, color, models, selected, onSelectAll, onToggle,
-}: {
-  title: string;
-  subtitle: string;
-  color: "purple" | "green";
-  models: AvailableModel[];
-  selected: Set<string>;
-  onSelectAll: () => void;
-  onToggle: (id: string) => void;
-}) {
-  const allOn = models.length > 0 && models.every((m) => selected.has(m.id));
-  const badge = color === "purple" ? "bg-purple-100 text-purple-700" : "bg-green-100 text-green-700";
-  return (
-    <div>
-      <div className="flex items-center justify-between mb-2">
-        <div>
-          <div className="flex items-center gap-2">
-            <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${badge}`}>{title}</span>
-            <span className="text-xs text-gray-500">{subtitle}</span>
-          </div>
-        </div>
-        <button
-          type="button"
-          onClick={onSelectAll}
-          className="text-xs text-blue-600 hover:text-blue-800"
-        >
-          {allOn ? "Clear" : "Select all"}
-        </button>
-      </div>
-      {models.length === 0 ? (
-        <p className="text-sm text-gray-400 italic px-1 py-2">No models available for this protocol. Add a provider in Settings first.</p>
-      ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-          {models.map((m) => (
-            <label key={m.id} className="flex items-center gap-2 px-3 py-2 border rounded hover:bg-gray-50 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={selected.has(m.id)}
-                onChange={() => onToggle(m.id)}
-                className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-              />
-              <span className="text-sm font-mono text-gray-800 truncate">{m.id}</span>
-            </label>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
+// Claude Code maps its internal model presets to upstream models via
+// five named env vars. The dropdowns in the Claude card let the user
+// point each at one of the available Anthropic-protocol models.
+type ClaudeSlot = "main" | "sonnet" | "haiku" | "opus" | "reasoning";
 
+const CLAUDE_SLOTS: { id: ClaudeSlot; envVar: string; label: string; hint: string }[] = [
+  { id: "main", envVar: "ANTHROPIC_MODEL", label: "Main", hint: "Default when no model is given" },
+  { id: "sonnet", envVar: "ANTHROPIC_DEFAULT_SONNET_MODEL", label: "Sonnet preset", hint: "/model sonnet" },
+  { id: "haiku", envVar: "ANTHROPIC_DEFAULT_HAIKU_MODEL", label: "Haiku preset", hint: "/model haiku" },
+  { id: "opus", envVar: "ANTHROPIC_DEFAULT_OPUS_MODEL", label: "Opus preset", hint: "/model opus" },
+  { id: "reasoning", envVar: "ANTHROPIC_REASONING_MODEL", label: "Reasoning preset", hint: "extended thinking" },
+];
 
-// Per-agent config generators. Each receives the origin, the auth
-// token, and the relevant slice of the user's selected models. The
-// generated text is meant to be copy-pasted verbatim.
+// Per-agent config generators. All take only the values they actually
+// need - no implicit "selected" state. The manual-config body is
+// built at render time from these strings.
 
 function claudeCodeConfig(origin: string, token: string, slots: Record<ClaudeSlot, string>) {
   // Always include base URL + auth so the file is self-sufficient even
-  // when no model slot has been picked yet.
+  // when no model slot has been picked.
   const lines: string[] = [
-    `    "ANTHROPIC_BASE_URL": "${origin}/anthropic"`,
-    `    "ANTHROPIC_AUTH_TOKEN": "${token}"`,
+    "    \"ANTHROPIC_BASE_URL\": \"" + origin + "/anthropic\"",
+    "    \"ANTHROPIC_AUTH_TOKEN\": \"" + token + "\"",
   ];
   for (const slot of CLAUDE_SLOTS) {
     const v = slots[slot.id];
     if (!v) continue;
-    lines.push(`    "${slot.envVar}": "${v}"`);
+    lines.push("    \"" + slot.envVar + "\": \"" + v + "\"");
   }
-  return `{\n  "env": {\n${lines.join(",\n")}\n  }\n}`;
+  return "{\n  \"env\": {\n" + lines.join(",\n") + "\n  }\n}";
 }
 
 function openClawConfig(origin: string, token: string, modelIds: string[]) {
-  const modelsBlock = modelIds.map((id) => `          {
-            "id": "${id}",
-            "name": "${id}",
-            "input": ["text"],
-            "maxTokens": 8192
-          }`).join(",\n");
-  return `{
-  "models": {
-    "mode": "merge",
-    "providers": {
-      "token-party": {
-        "baseUrl": "${origin}/anthropic",
-        "apiKey": "${token}",
-        "api": "anthropic-messages",
-        "models": [
-${modelsBlock}
-        ]
-      }
-    }
-  }
-}`;
+  const modelsBlock = modelIds.map((id) =>
+    "          {\n" +
+    "            \"id\": \"" + id + "\",\n" +
+    "            \"name\": \"" + id + "\",\n" +
+    "            \"input\": [\"text\"],\n" +
+    "            \"maxTokens\": 8192\n" +
+    "          }"
+  ).join(",\n");
+  return "{\n  \"models\": {\n" +
+    "    \"mode\": \"merge\",\n" +
+    "    \"providers\": {\n" +
+    "      \"token-party\": {\n" +
+    "        \"baseUrl\": \"" + origin + "/anthropic\",\n" +
+    "        \"apiKey\": \"" + token + "\",\n" +
+    "        \"api\": \"anthropic-messages\",\n" +
+    "        \"models\": [\n" + modelsBlock + "\n        ]\n" +
+    "      }\n" +
+    "    }\n" +
+    "  }\n" +
+    "}";
 }
 
 function codexConfig(origin: string) {
-  return `[model_providers.tokenparty]
-name = "TokenParty"
-base_url = "${origin}/v1"
-env_key = "TOKENPARTY_API_KEY"
-wire_api = "chat"
-requires_openai_auth = false
-request_max_retries = 4
-stream_max_retries = 10
-stream_idle_timeout_ms = 300000`;
+  return "[model_providers.tokenparty]\n" +
+    "name = \"TokenParty\"\n" +
+    "base_url = \"" + origin + "/v1\"\n" +
+    "env_key = \"TOKENPARTY_API_KEY\"\n" +
+    "wire_api = \"chat\"\n" +
+    "requires_openai_auth = false\n" +
+    "request_max_retries = 4\n" +
+    "stream_max_retries = 10\n" +
+    "stream_idle_timeout_ms = 300000";
 }
 
 function codexEnvSnippet(token: string) {
-  return `export TOKENPARTY_API_KEY="${token}"`;
+  return "export TOKENPARTY_API_KEY=\"" + token + "\"";
 }
 
-function claudeOneClickScript(configBody: string) {
-  // bash heredoc with single-quoted EOF so $origin / $token / etc.
-  // inside the JSON body are NOT expanded by the user's shell.
-  const EOFS = "'EOF'";
-  return [
-    "mkdir -p \"$HOME/.claude\"",
-    "cat > \"$HOME/.claude/settings.json\" <<" + EOFS,
-    configBody,
-    EOFS,
-    "echo \"Wrote $HOME/.claude/settings.json\"",
-  ].join("\n");
+// One-click commands. The script tab is a single line: curl the
+// TokenParty instance\'s /setup/<agent> endpoint, which is expected
+// (future work) to read the user\'s existing config, patch only the
+// TokenParty fields, and leave the rest alone. We URL-encode values
+// for query-string safety.
+
+function urlEncode(s: string): string {
+  return encodeURIComponent(s);
 }
 
-function openclawProviderBlock(origin: string, token: string, modelIds: string[]) {
-  // Single-line JSON object (one record per provider in
-  // openclaw.json) — easier to embed in a heredoc than multi-line.
-  const modelsBlock = modelIds.map((id) => ({
-    id, name: id, input: ["text"], maxTokens: 8192,
-  }));
-  return JSON.stringify({
-    baseUrl: `${origin}/anthropic`,
-    apiKey: token,
-    api: "anthropic-messages",
-    models: modelsBlock,
-  });
+function claudeOneClickCommand(origin: string, token: string, slots: Record<ClaudeSlot, string>) {
+  const params: string[] = [
+    "token=" + urlEncode(token),
+    "base_url=" + urlEncode(origin + "/anthropic"),
+  ];
+  for (const slot of CLAUDE_SLOTS) {
+    const v = slots[slot.id];
+    if (v) params.push("model_" + slot.id + "=" + urlEncode(v));
+  }
+  return "curl -sSL \"" + origin + "/setup/claude?" + params.join("&") + "\" | bash";
 }
 
-function openclawMergeScript(tokenPartyBlock: string) {
-  // Stage the new provider block, then merge it into the existing
-  // ~/.openclaw/openclaw.json under models.providers["token-party"]
-  // so other providers in the file are preserved. Requires python3
-  // on PATH.
-  const EOFS = "'EOF'";
-  const PYEOFS = "'PYEOF'";
-  return [
-    "mkdir -p \"$HOME/.openclaw\"",
-    "cat > /tmp/openclaw-token-party.json <<" + EOFS,
-    tokenPartyBlock,
-    EOFS,
-    "python3 - <<" + PYEOFS,
-    [
-      "import json, os",
-      "with open(\"/tmp/openclaw-token-party.json\") as f:",
-      "    new_block = json.load(f)",
-      "target = os.path.expanduser(\"~/.openclaw/openclaw.json\")",
-      "if os.path.exists(target):",
-      "    with open(target) as f: existing = json.load(f)",
-      "else:",
-      "    existing = {}",
-      "models = existing.setdefault(\"models\", {})",
-      "models.setdefault(\"mode\", \"merge\")",
-      "providers = models.setdefault(\"providers\", {})",
-      "providers[\"token-party\"] = new_block",
-      "with open(target, \"w\") as f:",
-      "    json.dump(existing, f, indent=2)",
-      "    f.write(\"\\n\")",
-      "print(f\"Wrote {target}\")",
-    ].join("\n"),
-    PYEOFS,
-  ].join("\n");
+function openclawOneClickCommand(origin: string, token: string, modelIds: string[]) {
+  const params = [
+    "token=" + urlEncode(token),
+    "base_url=" + urlEncode(origin + "/anthropic"),
+    "models=" + urlEncode(modelIds.join(",")),
+  ];
+  return "curl -sSL \"" + origin + "/setup/openclaw?" + params.join("&") + "\" | bash";
 }
 
-function openclawOneClickScript(tokenPartyBlock: string) {
-  return openclawMergeScript(tokenPartyBlock);
+function codexOneClickCommand(origin: string, token: string) {
+  const params = [
+    "token=" + urlEncode(token),
+    "base_url=" + urlEncode(origin + "/v1"),
+  ];
+  return "curl -sSL \"" + origin + "/setup/codex?" + params.join("&") + "\" | bash";
 }
 
-function codexOneClickScript(origin: string, token: string) {
-  const EOFS = "'EOF'";
-  return [
-    "mkdir -p \"$HOME/.codex\"",
-    "cat > \"$HOME/.codex/config.toml\" <<" + EOFS,
-    codexConfig(origin),
-    EOFS,
-    "export TOKENPARTY_API_KEY=\"" + token + "\"",
-    "echo \"Wrote $HOME/.codex/config.toml\"",
-    "echo \"Exported TOKENPARTY_API_KEY for this shell session\"",
-    "echo \"Next: codex --model <one-of-your-selected-models>\"",
-  ].join("\n");
-}
-
-
-
-// One-click scripts. Each is a bash snippet the user copies and runs.
-// The script writes the right config file (or merges into OpenClaw's
-// existing JSON) and, for Codex, exports the API key in the current
-// shell. We avoid nested template-literal escapes by assembling the
-// heredoc marker explicitly — single-quoted EOF keeps bash from
-// expanding $origin or $token in the config body.
-
-type ManualTab = "script" | "manual";
+type AgentTab = "manual" | "oneclick";
 
 function AgentCard({
-  name, protocol, configPath, configPathWindows, language, config, envSnippet, modelHints, emptyHint, manualExtras, script, scriptDescription,
+  name, protocol, configPath, configPathWindows, language,
+  config, envSnippet, oneClickCommand, oneClickHint,
+  manualExtras,
 }: {
   name: string;
   protocol: Protocol;
@@ -419,16 +256,14 @@ function AgentCard({
   language: "json" | "toml" | "sh";
   config: string;
   envSnippet?: string;
-  modelHints?: string[];
-  emptyHint?: string;
-  // Optional node rendered at the top of the Manual tab — Claude Code
-  // uses this for the 5-slot model mapping UI.
+  // The single curl | bash line shown in the One-click Script tab.
+  oneClickCommand: string;
+  oneClickHint: string;
+  // Optional node rendered at the top of the Manual tab. Claude Code
+  // uses this for the 5-slot model mapping UI; OpenClaw/Codex omit it.
   manualExtras?: React.ReactNode;
-  // One-click bash script. Required; the tab system is always shown.
-  script: string;
-  scriptDescription: string;
 }) {
-  const [tab, setTab] = useState<ManualTab>("script");
+  const [tab, setTab] = useState<AgentTab>("manual");
   const badge = protocol === "anthropic"
     ? "bg-purple-100 text-purple-700"
     : "bg-green-100 text-green-700";
@@ -439,91 +274,73 @@ function AgentCard({
       <div className="p-5 border-b border-gray-100 flex items-start justify-between gap-4 flex-wrap">
         <div>
           <h3 className="text-lg font-semibold text-gray-900">{name}</h3>
-          <span className={`inline-block mt-1 text-xs px-2 py-0.5 rounded-full font-medium ${badge}`}>{protocolLabel}</span>
+          <span className={"inline-block mt-1 text-xs px-2 py-0.5 rounded-full font-medium " + badge}>{protocolLabel}</span>
         </div>
       </div>
 
       <div className="px-5 pt-4 flex gap-1 border-b border-gray-100">
         <button
           type="button"
-          onClick={() => setTab("script")}
-          className={`text-sm px-4 py-2 -mb-px rounded-t border-b-2 ${tab === "script" ? "border-blue-600 text-blue-700 font-medium" : "border-transparent text-gray-500 hover:text-gray-700"}`}
-        >
-          One-click script
-        </button>
-        <button
-          type="button"
           onClick={() => setTab("manual")}
-          className={`text-sm px-4 py-2 -mb-px rounded-t border-b-2 ${tab === "manual" ? "border-blue-600 text-blue-700 font-medium" : "border-transparent text-gray-500 hover:text-gray-700"}`}
+          className={"text-sm px-4 py-2 -mb-px rounded-t border-b-2 " + (tab === "manual" ? "border-blue-600 text-blue-700 font-medium" : "border-transparent text-gray-500 hover:text-gray-700")}
         >
           Manual config
         </button>
+        <button
+          type="button"
+          onClick={() => setTab("oneclick")}
+          className={"text-sm px-4 py-2 -mb-px rounded-t border-b-2 " + (tab === "oneclick" ? "border-blue-600 text-blue-700 font-medium" : "border-transparent text-gray-500 hover:text-gray-700")}
+        >
+          One-click script
+        </button>
       </div>
 
-      {tab === "script" ? (
-        <div className="p-5 space-y-3">
-          <p className="text-sm text-gray-600">{scriptDescription}</p>
-          <CodeBlock value={script} language="sh" />
-          <p className="text-xs text-gray-500">macOS / Linux only. Windows users should use the Manual tab.</p>
-        </div>
-      ) : (
+      {tab === "manual" ? (
         <div className="p-5 space-y-4">
-        <div>
-          <div className="text-xs uppercase tracking-wide text-gray-500 mb-1">Config file path</div>
-          <div className="flex items-center gap-2 flex-wrap">
-            <InlineCode>{configPath}</InlineCode>
-            {configPathWindows && (
-              <>
-                <span className="text-xs text-gray-400">or</span>
-                <InlineCode>{configPathWindows}</InlineCode>
-              </>
-            )}
-            <CopyButton value={configPath} label="Copy path" />
-          </div>
-        </div>
-
-        <div>
-          <div className="text-xs uppercase tracking-wide text-gray-500 mb-1">Contents</div>
-          {emptyHint ? (
-            <p className="text-sm text-gray-500 italic">{emptyHint}</p>
-          ) : (
-            <CodeBlock value={config} language={language} />
-          )}
-        </div>
-
-        {envSnippet && (
+          {manualExtras}
           <div>
-            <div className="text-xs uppercase tracking-wide text-gray-500 mb-1">Shell environment</div>
-            <CodeBlock value={envSnippet} language="sh" />
-            <p className="text-xs text-gray-500 mt-2">
-              Add this line to your shell rc (<InlineCode>~/.zshrc</InlineCode>, <InlineCode>~/.bashrc</InlineCode>, etc.) so the Codex provider block above can read the token.
-            </p>
-          </div>
-        )}
-
-        {modelHints && modelHints.length > 0 && (
-          <div>
-            <div className="text-xs uppercase tracking-wide text-gray-500 mb-1">Run with</div>
-            <div className="flex flex-wrap gap-2">
-              {modelHints.map((m) => (
-                <span key={m} className="text-xs font-mono px-2 py-1 rounded bg-gray-100 text-gray-800 border border-gray-200">
-                  {m}
-                </span>
-              ))}
+            <div className="text-xs uppercase tracking-wide text-gray-500 mb-1">Config file path</div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <InlineCode>{configPath}</InlineCode>
+              {configPathWindows && (
+                <>
+                  <span className="text-xs text-gray-400">or</span>
+                  <InlineCode>{configPathWindows}</InlineCode>
+                </>
+              )}
+              <CopyButton value={configPath} label="Copy path" />
             </div>
           </div>
-        )}
+          <div>
+            <div className="text-xs uppercase tracking-wide text-gray-500 mb-1">Contents</div>
+            <CodeBlock value={config} language={language} />
+          </div>
+          {envSnippet && (
+            <div>
+              <div className="text-xs uppercase tracking-wide text-gray-500 mb-1">Shell environment</div>
+              <CodeBlock value={envSnippet} language="sh" />
+              <p className="text-xs text-gray-500 mt-2">
+                Add this line to your shell rc (<InlineCode>~/.zshrc</InlineCode>, <InlineCode>~/.bashrc</InlineCode>, etc.) so the Codex provider block above can read the token.
+              </p>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="p-5 space-y-3">
+          <p className="text-sm text-gray-600">{oneClickHint}</p>
+          <CodeBlock value={oneClickCommand} language="sh" />
+          <p className="text-xs text-gray-500">
+            The endpoint is expected to merge the TokenParty settings into the agent\'s existing config and leave everything else alone.
+          </p>
         </div>
       )}
     </div>
   );
 }
 
-
 export default function AgentSetup() {
   const [origin, setOrigin] = useState("");
   const [token, setToken] = useState<string | null>(null);
-  const [selected, setSelected] = useState<Set<string>>(new Set());
   const { models, error: modelsError } = useAvailableModels();
   const role = getRole();
   const userName = getUserName();
@@ -535,49 +352,25 @@ export default function AgentSetup() {
     setToken(getToken());
   }, []);
 
-  // Adapter for ModelPicker — it uses an in-band signaling trick to
-  // pass "replace the whole set" through the same toggle callback.
-  // Decode that here.
-  const handleSelectionChange = (signal: string) => {
-    if (signal.startsWith("__replace_set__")) {
-      try {
-        const arr = JSON.parse(signal.slice("__replace_set__".length));
-        setSelected(new Set(Array.isArray(arr) ? arr : []));
-      } catch {
-        setSelected(new Set());
-      }
-      return;
-    }
-    // Plain toggle
-    const next = new Set(selected);
-    if (next.has(signal)) next.delete(signal); else next.add(signal);
-    setSelected(next);
-  };
+  // Available models filtered by protocol. Used by OpenClaw\'s config
+  // (anthropic) and Claude Code\'s slot dropdowns (anthropic).
+  const availableAnthropic = (models ?? []).filter((m) => m.protocols.has("anthropic")).map((m) => m.id);
+  const availableOpenai = (models ?? []).filter((m) => m.protocols.has("openai")).map((m) => m.id);
 
-  const anthropicSelected = useMemo(
-    () => (models ?? []).filter((m) => m.protocols.has("anthropic") && selected.has(m.id)).map((m) => m.id),
-    [models, selected]
-  );
-  const openaiSelected = useMemo(
-    () => (models ?? []).filter((m) => m.protocols.has("openai") && selected.has(m.id)).map((m) => m.id),
-    [models, selected]
-  );
-
-  // Five-slot model mapping for Claude Code. Defaults each slot to
-  // the first Anthropic-protocol model the user has picked. Once
-  // primed we no longer auto-fill - subsequent changes are explicit
-  // user picks via the per-slot dropdown below.
+  // Claude Code 5-slot model mapping. Defaults every slot to the
+  // first Anthropic-protocol model as soon as the list is available,
+  // then leaves the user\'s explicit picks alone afterwards.
   const [claudeSlots, setClaudeSlots] = useState<Record<ClaudeSlot, string>>({
     main: "", sonnet: "", haiku: "", opus: "", reasoning: "",
   });
   const [claudeSlotsPrimed, setClaudeSlotsPrimed] = useState(false);
   useEffect(() => {
     if (claudeSlotsPrimed) return;
-    if (anthropicSelected.length === 0) return;
-    const first = anthropicSelected[0];
+    if (availableAnthropic.length === 0) return;
+    const first = availableAnthropic[0];
     setClaudeSlots({ main: first, sonnet: first, haiku: first, opus: first, reasoning: first });
     setClaudeSlotsPrimed(true);
-  }, [anthropicSelected, claudeSlotsPrimed]);
+  }, [availableAnthropic, claudeSlotsPrimed]);
 
   const loggedIn = !!token;
   const userLabel = role === "admin" ? "Admin" : (userName ?? "User");
@@ -587,19 +380,19 @@ export default function AgentSetup() {
       <header>
         <h2 className="text-2xl font-bold text-gray-900">Agent Setup</h2>
         <p className="text-sm text-gray-600 mt-1">
-          Connect Claude Code, OpenClaw, or Codex CLI to TokenParty. Confirm the connection details below, pick the models you want, then copy the config into the agent's config file.
+          Connect Claude Code, OpenClaw, or Codex CLI to TokenParty. Confirm the connection, tweak Claude\'s 5 model slots if needed, then copy the config or run the one-click script.
         </p>
       </header>
 
       {!loggedIn && (
         <div className="bg-amber-50 border border-amber-200 rounded-md p-4 text-sm text-amber-800">
-          You are not signed in. <a href="/login" className="underline font-medium">Log in</a> first — the token below will populate automatically once you do.
+          You are not signed in. <a href="/login" className="underline font-medium">Log in</a> first - the token below will populate automatically once you do.
         </div>
       )}
 
       <section className="bg-white rounded-lg shadow p-6 space-y-4">
         <div>
-          <h3 className="text-lg font-semibold text-gray-900">Connection</h3>
+          <h3 className="text-lg font-semibold text-gray-900">Common Setup</h3>
           <p className="text-xs text-gray-500 mt-1">
             Both values below are auto-detected. You should not need to change them.
           </p>
@@ -616,7 +409,7 @@ export default function AgentSetup() {
         </div>
         <div>
           <div className="text-xs uppercase tracking-wide text-gray-500 mb-1">
-            API token {userLabel ? <span className="text-gray-400 normal-case">— {userLabel}</span> : null}
+            API token {userLabel ? <span className="text-gray-400 normal-case">- {userLabel}</span> : null}
           </div>
           {loggedIn ? (
             <div className="flex items-center gap-2">
@@ -627,20 +420,19 @@ export default function AgentSetup() {
             <div className="text-sm text-gray-400 italic">No token in storage. Sign in to populate.</div>
           )}
         </div>
-      </section>
-
-      <section className="space-y-4">
-        {modelsError && (
-          <div className="bg-red-50 border border-red-200 rounded-md p-4 text-sm text-red-700">
-            Could not load available models: {modelsError}
-          </div>
-        )}
-        {models === null && !modelsError && (
-          <div className="bg-white rounded-lg shadow p-6 text-sm text-gray-500">Loading models…</div>
-        )}
-        {models && (
-          <ModelPicker models={models} selected={selected} onToggle={handleSelectionChange} />
-        )}
+        <div>
+          <div className="text-xs uppercase tracking-wide text-gray-500 mb-1">Available models</div>
+          {modelsError && <p className="text-sm text-red-700">Could not load models: {modelsError}</p>}
+          {models === null && !modelsError && <p className="text-sm text-gray-400">Loading models...</p>}
+          {models && (
+            <>
+              <AvailableModelsList models={models} />
+              <p className="text-xs text-gray-500 mt-2">
+                <span className="text-purple-600 font-semibold">A</span> = Anthropic protocol (Claude Code, OpenClaw). <span className="text-green-600 font-semibold">O</span> = OpenAI protocol (Codex CLI). Models you can route to TokenParty are the ones listed here.
+              </p>
+            </>
+          )}
+        </div>
       </section>
 
       {!loggedIn ? (
@@ -650,6 +442,7 @@ export default function AgentSetup() {
       ) : (
         <section className="space-y-4">
           <h3 className="text-lg font-semibold text-gray-900">Agent configs</h3>
+
           <AgentCard
             name="Claude Code"
             protocol="anthropic"
@@ -657,18 +450,16 @@ export default function AgentSetup() {
             configPathWindows="%USERPROFILE%\\.claude\\settings.json"
             language="json"
             config={claudeCodeConfig(origin, token!, claudeSlots)}
-            script={claudeOneClickScript(claudeCodeConfig(origin, token!, claudeSlots))}
-            scriptDescription={"Run this in your terminal. It writes the JSON config to the standard Claude Code path so subsequent invocations route through TokenParty automatically."}
-            modelHints={anthropicSelected.length > 0 ? anthropicSelected.map((m) => `claude --model ${m}`) : undefined}
-            emptyHint={anthropicSelected.length === 0 ? "Pick at least one Anthropic-protocol model above to populate the per-slot mappings." : undefined}
-            manualExtras={(
+            oneClickCommand={claudeOneClickCommand(origin, token!, claudeSlots)}
+            oneClickHint={"Run this in your terminal. The endpoint reads your existing settings.json, patches only the TokenParty fields (auth token, base URL, and the 5 model slots), and leaves the rest of your config alone."}
+            manualExtras={
               <div>
                 <div className="text-xs uppercase tracking-wide text-gray-500 mb-2">
                   Model mapping <span className="text-gray-400 normal-case">- bind each Claude Code preset slot to a TokenParty model</span>
                 </div>
-                {anthropicSelected.length === 0 ? (
+                {availableAnthropic.length === 0 ? (
                   <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2">
-                    Pick at least one Anthropic-protocol model above to enable the per-slot dropdowns.
+                    No Anthropic-protocol models are available. Add a provider in Settings first.
                   </p>
                 ) : (
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -683,7 +474,7 @@ export default function AgentSetup() {
                           onChange={(e) => setClaudeSlots({ ...claudeSlots, [slot.id]: e.target.value })}
                           className="mt-1 w-full border rounded px-2 py-1.5 text-sm font-mono focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
                         >
-                          {anthropicSelected.map((m) => (
+                          {availableAnthropic.map((m) => (
                             <option key={m} value={m}>{m}</option>
                           ))}
                         </select>
@@ -693,19 +484,20 @@ export default function AgentSetup() {
                   </div>
                 )}
               </div>
-            )}
+            }
           />
+
           <AgentCard
             name="OpenClaw"
             protocol="anthropic"
             configPath="~/.openclaw/openclaw.json"
             configPathWindows="%USERPROFILE%\\.openclaw\\openclaw.json"
             language="json"
-            config={openClawConfig(origin, token!, anthropicSelected)}
-            script={openclawOneClickScript(openclawProviderBlock(origin, token!, anthropicSelected))}
-            scriptDescription={"Run this in your terminal. It stages the TokenParty provider block to a temp file, then merges it under models.providers[\"token-party\"] of your existing openclaw.json so other providers and settings are preserved."}
-            emptyHint={anthropicSelected.length === 0 ? "Pick at least one Anthropic-protocol model above to populate this config." : undefined}
+            config={openClawConfig(origin, token!, availableAnthropic)}
+            oneClickCommand={openclawOneClickCommand(origin, token!, availableAnthropic)}
+            oneClickHint={"Run this in your terminal. The endpoint merges the TokenParty provider block into models.providers[\"token-party\"] of your existing openclaw.json, leaving other providers and settings intact."}
           />
+
           <AgentCard
             name="Codex CLI"
             protocol="openai"
@@ -713,16 +505,15 @@ export default function AgentSetup() {
             configPathWindows="%USERPROFILE%\\.codex\\config.toml"
             language="toml"
             config={codexConfig(origin)}
-            script={codexOneClickScript(origin, token!)}
-            scriptDescription={"Run this in your terminal. It writes config.toml to the standard Codex path AND exports TOKENPARTY_API_KEY into the current shell so the next codex invocation picks it up immediately."}
             envSnippet={codexEnvSnippet(token!)}
-            modelHints={openaiSelected.length > 0 ? openaiSelected.map((m) => `codex --model ${m}`) : undefined}
+            oneClickCommand={codexOneClickCommand(origin, token!)}
+            oneClickHint={"Run this in your terminal. The endpoint writes config.toml to the standard Codex path AND exports TOKENPARTY_API_KEY into the current shell so the next codex invocation works immediately."}
           />
         </section>
       )}
 
       <footer className="text-xs text-gray-500 text-center pt-2 pb-6">
-        TokenParty routes requests to the right upstream provider based on the model name — your local agent just sends the chosen model id to the base URL above.
+        TokenParty routes requests to the right upstream provider based on the model name. The local agent just sends the chosen model id to the base URL above.
       </footer>
     </div>
   );
