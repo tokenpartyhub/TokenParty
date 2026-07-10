@@ -1,6 +1,6 @@
 {
   "name": "@tokenparty/tokenparty",
-  "version": "0.0.25",
+  "version": "0.0.26",
   "description": "Self-hosted AI gateway — route, observe, and control your LLM API traffic. OpenAI ↔ Anthropic protocol translation, cost-based smart routing, per-user budgets, and a built-in dashboard. Zero dependencies.",
   "type": "module",
   "bin": {

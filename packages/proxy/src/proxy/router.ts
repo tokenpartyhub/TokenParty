@@ -74,3 +74,26 @@ export function listAvailableModels(token: Token, protocol?: "anthropic" | "open
 
   return [...models];
 }
+
+// Like listAvailableModels but returns one entry per (provider, model) pair
+// rather than a deduplicated set of ids. Used by the OpenAI /v1/models
+// handler to emit Codex-friendly metadata (priority) alongside the basic
+// id. Deduplication is the caller's responsibility.
+export interface AvailableModelEntry {
+  id: string;
+  priority: number;
+}
+
+export function listAvailableModelsDetailed(token: Token, protocol: "anthropic" | "openai"): AvailableModelEntry[] {
+  const config = getConfig();
+  const out: AvailableModelEntry[] = [];
+  for (const provider of config.providers) {
+    if (!provider.enabled) continue;
+    if (provider.type !== protocol) continue;
+    if (!isProviderAllowed(provider, token.allowedProviders)) continue;
+    for (const model of provider.models) {
+      out.push({ id: getModelId(model), priority: getModelPriority(model) });
+    }
+  }
+  return out;
+}
