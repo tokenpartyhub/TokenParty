@@ -79,6 +79,16 @@ function maskToken(t: string): string {
   return t.slice(0, 6) + "****" + t.slice(-4);
 }
 
+type ClaudeSlot = "main" | "sonnet" | "haiku" | "opus" | "reasoning";
+
+const CLAUDE_SLOTS: { id: ClaudeSlot; envVar: string; label: string; hint: string }[] = [
+  { id: "main", envVar: "ANTHROPIC_MODEL", label: "Main", hint: "Default when no model is given" },
+  { id: "sonnet", envVar: "ANTHROPIC_DEFAULT_SONNET_MODEL", label: "Sonnet preset", hint: "/model sonnet" },
+  { id: "haiku", envVar: "ANTHROPIC_DEFAULT_HAIKU_MODEL", label: "Haiku preset", hint: "/model haiku" },
+  { id: "opus", envVar: "ANTHROPIC_DEFAULT_OPUS_MODEL", label: "Opus preset", hint: "/model opus" },
+  { id: "reasoning", envVar: "ANTHROPIC_REASONING_MODEL", label: "Reasoning preset", hint: "extended thinking" },
+];
+
 
 // AvailableModel: the unified model list rendered in the picker.
 // Built by joining api.getModels() (model id + provider ids) with
@@ -253,13 +263,19 @@ function ModelGroup({
 // token, and the relevant slice of the user's selected models. The
 // generated text is meant to be copy-pasted verbatim.
 
-function claudeCodeConfig(origin: string, token: string) {
-  return `{
-  "env": {
-    "ANTHROPIC_BASE_URL": "${origin}/anthropic",
-    "ANTHROPIC_AUTH_TOKEN": "${token}"
+function claudeCodeConfig(origin: string, token: string, slots: Record<ClaudeSlot, string>) {
+  // Always include base URL + auth so the file is self-sufficient even
+  // when no model slot has been picked yet.
+  const lines: string[] = [
+    `    "ANTHROPIC_BASE_URL": "${origin}/anthropic"`,
+    `    "ANTHROPIC_AUTH_TOKEN": "${token}"`,
+  ];
+  for (const slot of CLAUDE_SLOTS) {
+    const v = slots[slot.id];
+    if (!v) continue;
+    lines.push(`    "${slot.envVar}": "${v}"`);
   }
-}`;
+  return `{\n  "env": {\n${lines.join(",\n")}\n  }\n}`;
 }
 
 function openClawConfig(origin: string, token: string, modelIds: string[]) {
@@ -302,9 +318,99 @@ function codexEnvSnippet(token: string) {
   return `export TOKENPARTY_API_KEY="${token}"`;
 }
 
+function claudeOneClickScript(configBody: string) {
+  // bash heredoc with single-quoted EOF so $origin / $token / etc.
+  // inside the JSON body are NOT expanded by the user's shell.
+  const EOFS = "'EOF'";
+  return [
+    "mkdir -p \"$HOME/.claude\"",
+    "cat > \"$HOME/.claude/settings.json\" <<" + EOFS,
+    configBody,
+    EOFS,
+    "echo \"Wrote $HOME/.claude/settings.json\"",
+  ].join("\n");
+}
+
+function openclawProviderBlock(origin: string, token: string, modelIds: string[]) {
+  // Single-line JSON object (one record per provider in
+  // openclaw.json) — easier to embed in a heredoc than multi-line.
+  const modelsBlock = modelIds.map((id) => ({
+    id, name: id, input: ["text"], maxTokens: 8192,
+  }));
+  return JSON.stringify({
+    baseUrl: `${origin}/anthropic`,
+    apiKey: token,
+    api: "anthropic-messages",
+    models: modelsBlock,
+  });
+}
+
+function openclawMergeScript(tokenPartyBlock: string) {
+  // Stage the new provider block, then merge it into the existing
+  // ~/.openclaw/openclaw.json under models.providers["token-party"]
+  // so other providers in the file are preserved. Requires python3
+  // on PATH.
+  const EOFS = "'EOF'";
+  const PYEOFS = "'PYEOF'";
+  return [
+    "mkdir -p \"$HOME/.openclaw\"",
+    "cat > /tmp/openclaw-token-party.json <<" + EOFS,
+    tokenPartyBlock,
+    EOFS,
+    "python3 - <<" + PYEOFS,
+    [
+      "import json, os",
+      "with open(\"/tmp/openclaw-token-party.json\") as f:",
+      "    new_block = json.load(f)",
+      "target = os.path.expanduser(\"~/.openclaw/openclaw.json\")",
+      "if os.path.exists(target):",
+      "    with open(target) as f: existing = json.load(f)",
+      "else:",
+      "    existing = {}",
+      "models = existing.setdefault(\"models\", {})",
+      "models.setdefault(\"mode\", \"merge\")",
+      "providers = models.setdefault(\"providers\", {})",
+      "providers[\"token-party\"] = new_block",
+      "with open(target, \"w\") as f:",
+      "    json.dump(existing, f, indent=2)",
+      "    f.write(\"\\n\")",
+      "print(f\"Wrote {target}\")",
+    ].join("\n"),
+    PYEOFS,
+  ].join("\n");
+}
+
+function openclawOneClickScript(tokenPartyBlock: string) {
+  return openclawMergeScript(tokenPartyBlock);
+}
+
+function codexOneClickScript(origin: string, token: string) {
+  const EOFS = "'EOF'";
+  return [
+    "mkdir -p \"$HOME/.codex\"",
+    "cat > \"$HOME/.codex/config.toml\" <<" + EOFS,
+    codexConfig(origin),
+    EOFS,
+    "export TOKENPARTY_API_KEY=\"" + token + "\"",
+    "echo \"Wrote $HOME/.codex/config.toml\"",
+    "echo \"Exported TOKENPARTY_API_KEY for this shell session\"",
+    "echo \"Next: codex --model <one-of-your-selected-models>\"",
+  ].join("\n");
+}
+
+
+
+// One-click scripts. Each is a bash snippet the user copies and runs.
+// The script writes the right config file (or merges into OpenClaw's
+// existing JSON) and, for Codex, exports the API key in the current
+// shell. We avoid nested template-literal escapes by assembling the
+// heredoc marker explicitly — single-quoted EOF keeps bash from
+// expanding $origin or $token in the config body.
+
+type ManualTab = "script" | "manual";
 
 function AgentCard({
-  name, protocol, configPath, configPathWindows, language, config, envSnippet, modelHints, emptyHint,
+  name, protocol, configPath, configPathWindows, language, config, envSnippet, modelHints, emptyHint, manualExtras, script, scriptDescription,
 }: {
   name: string;
   protocol: Protocol;
@@ -315,7 +421,14 @@ function AgentCard({
   envSnippet?: string;
   modelHints?: string[];
   emptyHint?: string;
+  // Optional node rendered at the top of the Manual tab — Claude Code
+  // uses this for the 5-slot model mapping UI.
+  manualExtras?: React.ReactNode;
+  // One-click bash script. Required; the tab system is always shown.
+  script: string;
+  scriptDescription: string;
 }) {
+  const [tab, setTab] = useState<ManualTab>("script");
   const badge = protocol === "anthropic"
     ? "bg-purple-100 text-purple-700"
     : "bg-green-100 text-green-700";
@@ -330,7 +443,31 @@ function AgentCard({
         </div>
       </div>
 
-      <div className="p-5 space-y-4">
+      <div className="px-5 pt-4 flex gap-1 border-b border-gray-100">
+        <button
+          type="button"
+          onClick={() => setTab("script")}
+          className={`text-sm px-4 py-2 -mb-px rounded-t border-b-2 ${tab === "script" ? "border-blue-600 text-blue-700 font-medium" : "border-transparent text-gray-500 hover:text-gray-700"}`}
+        >
+          One-click script
+        </button>
+        <button
+          type="button"
+          onClick={() => setTab("manual")}
+          className={`text-sm px-4 py-2 -mb-px rounded-t border-b-2 ${tab === "manual" ? "border-blue-600 text-blue-700 font-medium" : "border-transparent text-gray-500 hover:text-gray-700"}`}
+        >
+          Manual config
+        </button>
+      </div>
+
+      {tab === "script" ? (
+        <div className="p-5 space-y-3">
+          <p className="text-sm text-gray-600">{scriptDescription}</p>
+          <CodeBlock value={script} language="sh" />
+          <p className="text-xs text-gray-500">macOS / Linux only. Windows users should use the Manual tab.</p>
+        </div>
+      ) : (
+        <div className="p-5 space-y-4">
         <div>
           <div className="text-xs uppercase tracking-wide text-gray-500 mb-1">Config file path</div>
           <div className="flex items-center gap-2 flex-wrap">
@@ -376,7 +513,8 @@ function AgentCard({
             </div>
           </div>
         )}
-      </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -424,6 +562,22 @@ export default function AgentSetup() {
     () => (models ?? []).filter((m) => m.protocols.has("openai") && selected.has(m.id)).map((m) => m.id),
     [models, selected]
   );
+
+  // Five-slot model mapping for Claude Code. Defaults each slot to
+  // the first Anthropic-protocol model the user has picked. Once
+  // primed we no longer auto-fill - subsequent changes are explicit
+  // user picks via the per-slot dropdown below.
+  const [claudeSlots, setClaudeSlots] = useState<Record<ClaudeSlot, string>>({
+    main: "", sonnet: "", haiku: "", opus: "", reasoning: "",
+  });
+  const [claudeSlotsPrimed, setClaudeSlotsPrimed] = useState(false);
+  useEffect(() => {
+    if (claudeSlotsPrimed) return;
+    if (anthropicSelected.length === 0) return;
+    const first = anthropicSelected[0];
+    setClaudeSlots({ main: first, sonnet: first, haiku: first, opus: first, reasoning: first });
+    setClaudeSlotsPrimed(true);
+  }, [anthropicSelected, claudeSlotsPrimed]);
 
   const loggedIn = !!token;
   const userLabel = role === "admin" ? "Admin" : (userName ?? "User");
@@ -502,9 +656,44 @@ export default function AgentSetup() {
             configPath="~/.claude/settings.json"
             configPathWindows="%USERPROFILE%\\.claude\\settings.json"
             language="json"
-            config={claudeCodeConfig(origin, token!)}
+            config={claudeCodeConfig(origin, token!, claudeSlots)}
+            script={claudeOneClickScript(claudeCodeConfig(origin, token!, claudeSlots))}
+            scriptDescription={"Run this in your terminal. It writes the JSON config to the standard Claude Code path so subsequent invocations route through TokenParty automatically."}
             modelHints={anthropicSelected.length > 0 ? anthropicSelected.map((m) => `claude --model ${m}`) : undefined}
-            emptyHint={anthropicSelected.length === 0 ? "Pick at least one Anthropic-protocol model above to populate this config." : undefined}
+            emptyHint={anthropicSelected.length === 0 ? "Pick at least one Anthropic-protocol model above to populate the per-slot mappings." : undefined}
+            manualExtras={(
+              <div>
+                <div className="text-xs uppercase tracking-wide text-gray-500 mb-2">
+                  Model mapping <span className="text-gray-400 normal-case">- bind each Claude Code preset slot to a TokenParty model</span>
+                </div>
+                {anthropicSelected.length === 0 ? (
+                  <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2">
+                    Pick at least one Anthropic-protocol model above to enable the per-slot dropdowns.
+                  </p>
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {CLAUDE_SLOTS.map((slot) => (
+                      <label key={slot.id} className="block">
+                        <div className="flex items-baseline justify-between">
+                          <span className="text-xs font-medium text-gray-700">{slot.label}</span>
+                          <span className="text-[10px] font-mono text-gray-400">{slot.hint}</span>
+                        </div>
+                        <select
+                          value={claudeSlots[slot.id] || ""}
+                          onChange={(e) => setClaudeSlots({ ...claudeSlots, [slot.id]: e.target.value })}
+                          className="mt-1 w-full border rounded px-2 py-1.5 text-sm font-mono focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+                        >
+                          {anthropicSelected.map((m) => (
+                            <option key={m} value={m}>{m}</option>
+                          ))}
+                        </select>
+                        <div className="mt-0.5 text-[11px] font-mono text-gray-400 truncate">{slot.envVar}</div>
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
           />
           <AgentCard
             name="OpenClaw"
@@ -513,6 +702,8 @@ export default function AgentSetup() {
             configPathWindows="%USERPROFILE%\\.openclaw\\openclaw.json"
             language="json"
             config={openClawConfig(origin, token!, anthropicSelected)}
+            script={openclawOneClickScript(openclawProviderBlock(origin, token!, anthropicSelected))}
+            scriptDescription={"Run this in your terminal. It stages the TokenParty provider block to a temp file, then merges it under models.providers[\"token-party\"] of your existing openclaw.json so other providers and settings are preserved."}
             emptyHint={anthropicSelected.length === 0 ? "Pick at least one Anthropic-protocol model above to populate this config." : undefined}
           />
           <AgentCard
@@ -522,9 +713,10 @@ export default function AgentSetup() {
             configPathWindows="%USERPROFILE%\\.codex\\config.toml"
             language="toml"
             config={codexConfig(origin)}
+            script={codexOneClickScript(origin, token!)}
+            scriptDescription={"Run this in your terminal. It writes config.toml to the standard Codex path AND exports TOKENPARTY_API_KEY into the current shell so the next codex invocation picks it up immediately."}
             envSnippet={codexEnvSnippet(token!)}
             modelHints={openaiSelected.length > 0 ? openaiSelected.map((m) => `codex --model ${m}`) : undefined}
-            emptyHint={openaiSelected.length === 0 ? "Pick at least one OpenAI-protocol model above; you can still copy the config without any selected models." : undefined}
           />
         </section>
       )}
