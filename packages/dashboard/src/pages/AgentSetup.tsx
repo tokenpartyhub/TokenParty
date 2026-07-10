@@ -132,6 +132,66 @@ function AvailableModelsList({ models }: { models: AvailableModel[] }) {
   );
 }
 
+// Reusable checkbox list of model ids. Used by the OpenClaw and
+// Codex cards so the user can scope which models the generated
+// config + curl command actually reference. Default state is set
+// by the caller (we seed with everything available).
+function ModelCheckboxGroup({
+  title, subtitle, color, models, selected, onChange,
+}: {
+  title: string;
+  subtitle: string;
+  color: "purple" | "green";
+  models: string[];
+  selected: Set<string>;
+  onChange: (next: Set<string>) => void;
+}) {
+  if (models.length === 0) {
+    return (
+      <p className="text-sm text-gray-400 italic">
+        No models are available for this protocol. Add a provider in Settings first.
+      </p>
+    );
+  }
+  const allOn = models.every((m) => selected.has(m));
+  const badge = color === "purple" ? "bg-purple-100 text-purple-700" : "bg-green-100 text-green-700";
+  const toggle = (id: string) => {
+    const next = new Set(selected);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    onChange(next);
+  };
+  const toggleAll = () => {
+    if (allOn) onChange(new Set());
+    else onChange(new Set(models));
+  };
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-2">
+        <div>
+          <span className={"text-xs px-2 py-0.5 rounded-full font-medium " + badge}>{title}</span>
+          <span className="ml-2 text-xs text-gray-500">{subtitle}</span>
+        </div>
+        <button type="button" onClick={toggleAll} className="text-xs text-blue-600 hover:text-blue-800">
+          {allOn ? "Clear" : "Select all"}
+        </button>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+        {models.map((m) => (
+          <label key={m} className="flex items-center gap-2 px-3 py-2 border rounded hover:bg-gray-50 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={selected.has(m)}
+              onChange={() => toggle(m)}
+              className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+            />
+            <span className="text-sm font-mono text-gray-800 truncate">{m}</span>
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // Claude Code maps its internal model presets to upstream models via
 // five named env vars. The dropdowns in the Claude card let the user
 // point each at one of the available Anthropic-protocol models.
@@ -234,11 +294,12 @@ function openclawOneClickCommand(origin: string, token: string, modelIds: string
   return "curl -sSL \"" + origin + "/setup/openclaw?" + params.join("&") + "\" | bash";
 }
 
-function codexOneClickCommand(origin: string, token: string) {
+function codexOneClickCommand(origin: string, token: string, modelIds: string[]) {
   const params = [
     "token=" + urlEncode(token),
     "base_url=" + urlEncode(origin + "/v1"),
   ];
+  if (modelIds.length > 0) params.push("models=" + urlEncode(modelIds.join(",")));
   return "curl -sSL \"" + origin + "/setup/codex?" + params.join("&") + "\" | bash";
 }
 
@@ -372,6 +433,29 @@ export default function AgentSetup() {
     setClaudeSlotsPrimed(true);
   }, [availableAnthropic, claudeSlotsPrimed]);
 
+  // OpenClaw + Codex model selection. Both default to "everything
+  // available" the moment the model list first arrives, and stay
+  // under the user's control afterwards. The selected set drives the
+  // rendered config body (OpenClaw only) and the curl command for
+  // both agents.
+  const [openclawSelected, setOpenclawSelected] = useState<Set<string>>(new Set());
+  const [openclawPrimed, setOpenclawPrimed] = useState(false);
+  useEffect(() => {
+    if (openclawPrimed) return;
+    if (availableAnthropic.length === 0) return;
+    setOpenclawSelected(new Set(availableAnthropic));
+    setOpenclawPrimed(true);
+  }, [availableAnthropic, openclawPrimed]);
+
+  const [codexSelected, setCodexSelected] = useState<Set<string>>(new Set());
+  const [codexPrimed, setCodexPrimed] = useState(false);
+  useEffect(() => {
+    if (codexPrimed) return;
+    if (availableOpenai.length === 0) return;
+    setCodexSelected(new Set(availableOpenai));
+    setCodexPrimed(true);
+  }, [availableOpenai, codexPrimed]);
+
   const loggedIn = !!token;
   const userLabel = role === "admin" ? "Admin" : (userName ?? "User");
 
@@ -493,9 +577,24 @@ export default function AgentSetup() {
             configPath="~/.openclaw/openclaw.json"
             configPathWindows="%USERPROFILE%\\.openclaw\\openclaw.json"
             language="json"
-            config={openClawConfig(origin, token!, availableAnthropic)}
-            oneClickCommand={openclawOneClickCommand(origin, token!, availableAnthropic)}
+            config={openClawConfig(origin, token!, [...openclawSelected])}
+            oneClickCommand={openclawOneClickCommand(origin, token!, [...openclawSelected])}
             oneClickHint={"Run this in your terminal. The endpoint merges the TokenParty provider block into models.providers[\"token-party\"] of your existing openclaw.json, leaving other providers and settings intact."}
+            manualExtras={
+              <div>
+                <div className="text-xs uppercase tracking-wide text-gray-500 mb-2">
+                  Models <span className="text-gray-400 normal-case">- which Anthropic-protocol models to include in the providers block</span>
+                </div>
+                <ModelCheckboxGroup
+                  title="Anthropic protocol"
+                  subtitle="visible to OpenClaw"
+                  color="purple"
+                  models={availableAnthropic}
+                  selected={openclawSelected}
+                  onChange={setOpenclawSelected}
+                />
+              </div>
+            }
           />
 
           <AgentCard
@@ -506,8 +605,26 @@ export default function AgentSetup() {
             language="toml"
             config={codexConfig(origin)}
             envSnippet={codexEnvSnippet(token!)}
-            oneClickCommand={codexOneClickCommand(origin, token!)}
+            oneClickCommand={codexOneClickCommand(origin, token!, [...codexSelected])}
             oneClickHint={"Run this in your terminal. The endpoint writes config.toml to the standard Codex path AND exports TOKENPARTY_API_KEY into the current shell so the next codex invocation works immediately."}
+            manualExtras={
+              <div>
+                <div className="text-xs uppercase tracking-wide text-gray-500 mb-2">
+                  Models <span className="text-gray-400 normal-case">- which OpenAI-protocol models to register with the /setup endpoint</span>
+                </div>
+                <ModelCheckboxGroup
+                  title="OpenAI protocol"
+                  subtitle="visible to Codex CLI"
+                  color="green"
+                  models={availableOpenai}
+                  selected={codexSelected}
+                  onChange={setCodexSelected}
+                />
+                <p className="text-xs text-gray-500 mt-2">
+                  Codex\'s config.toml does not list models directly - they are picked at runtime via <InlineCode>codex --model &lt;id&gt;</InlineCode>. The selection above drives what gets passed to the setup endpoint; the displayed config.toml is the same minimal provider block.
+                </p>
+              </div>
+            }
           />
         </section>
       )}
