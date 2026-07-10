@@ -11,7 +11,7 @@ anthropicRoutes.use("/*", authMiddleware);
 
 const handleAnthropicModels = (c: Context<AppEnv>) => {
   const token = c.get("authToken");
-  const models = listAvailableModels(token);
+  const models = listAvailableModels(token, "anthropic");
   const data = models.map((id) => ({
     id,
     type: "model",

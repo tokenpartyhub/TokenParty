@@ -11,7 +11,7 @@ openaiRoutes.use("/*", authMiddleware);
 
 openaiRoutes.get("/models", (c) => {
   const token = c.get("authToken");
-  const models = listAvailableModels(token);
+  const models = listAvailableModels(token, "openai");
   return c.json({
     object: "list",
     data: models.map((id) => ({

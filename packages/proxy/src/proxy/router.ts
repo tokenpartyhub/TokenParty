@@ -59,12 +59,13 @@ export function resolveProvider(model: string, token: Token): { providers: Provi
   return { providers: allowed, pricing: modelConfig ? getModelPricing(modelConfig) : undefined };
 }
 
-export function listAvailableModels(token: Token): string[] {
+export function listAvailableModels(token: Token, protocol?: "anthropic" | "openai"): string[] {
   const config = getConfig();
   const models = new Set<string>();
 
   for (const provider of config.providers) {
     if (!provider.enabled) continue;
+    if (protocol && provider.type !== protocol) continue;
     if (!isProviderAllowed(provider, token.allowedProviders)) continue;
     for (const model of provider.models) {
       models.add(getModelId(model));
