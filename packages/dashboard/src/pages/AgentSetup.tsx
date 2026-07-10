@@ -425,14 +425,26 @@ function openClawConfig(origin: string, token: string, modelIds: string[]) {
 }
 
 function codexConfig(origin: string, modelIds: string[]) {
-  // TOML list-of-strings for the provider\'s available models. The
-  // selection above drives this directly. Empty array renders as
-  // `models = []` (the user just unchecked everything) - emitting
-  // `[""]` would be invalid TOML.
+  // Codex CLI requires three things at the top of config.toml for a
+  // custom provider to actually be used:
+  //   1. model_provider = "tokenparty"  - selects which [model_providers.*]
+  //      block to use.
+  //   2. model = "<id>"                - the default model Codex starts
+  //      with. We pick the first user-selected model; if the user
+  //      unchecked everything we omit the line entirely so Codex
+  //      prompts them on first launch instead of failing to start.
+  //   3. The [model_providers.tokenparty] block itself with wire_api,
+  //      base_url, etc.
+  const providerLine = "model_provider = \"tokenparty\"";
+  const modelLine = modelIds.length > 0
+    ? "model = \"" + modelIds[0] + "\"\n"
+    : "";
   const modelsLine = modelIds.length === 0
     ? "models = []"
     : "models = [\"" + modelIds.join("\", \"") + "\"]";
-  return "[model_providers.tokenparty]\n" +
+  return providerLine + "\n" +
+    modelLine +
+    "[model_providers.tokenparty]\n" +
     "name = \"TokenParty\"\n" +
     "base_url = \"" + origin + "/v1\"\n" +
     "env_key = \"TOKENPARTY_API_KEY\"\n" +
