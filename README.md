@@ -290,6 +290,7 @@ TokenParty/
 - [x] Provider config validation (rejects invalid baseUrl etc. at save time)
 - [x] Dashboard copy-as-cURL on request route trace
 - [x] Shareable request URLs (filters, pagination, and detail id in URL)
+- [x] OpenAI Responses → Chat Completions bridge (per-provider, openai-only) — splits `<think>...</think>` into a `reasoning` output item and routes `delta.reasoning_content`; adds `output_text` + `created_at`
 - [ ] Automatic prompt cache optimization (Anthropic cache_control injection)
 - [ ] Cost savings report ("TokenParty saved you $XX")
 - [ ] Tag-based cost analysis (cost breakdown by project/feature)
