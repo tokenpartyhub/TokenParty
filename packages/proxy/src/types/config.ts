@@ -26,6 +26,12 @@ export const ProviderSchema = z.object({
   fallback: z.string().optional(),
   group: z.string().optional(),
   currency: z.enum(["USD", "CNY"]).default("USD"),
+  // OpenAI-only. When true, an incoming /v1/responses request (Codex 0.144+)
+  // is translated to /v1/chat/completions before hitting this upstream, and
+  // the response is translated back to Responses format. Lets a provider
+  // that only implements Chat Completions serve Responses-API clients.
+  // No effect for anthropic providers or for /v1/chat/completions entries.
+  responsesToChat: z.boolean().default(false),
 });
 
 export const TokenSchema = z.object({

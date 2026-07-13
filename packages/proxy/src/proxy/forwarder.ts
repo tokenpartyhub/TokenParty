@@ -11,6 +11,12 @@ import { createGunzip, createInflate, createBrotliDecompress, createZstdDecompre
 import { Readable, Transform } from "node:stream";
 import { Agent as HttpsAgent, request as httpsRequest } from "node:https";
 import { Agent as HttpAgent, request as httpRequest } from "node:http";
+import {
+  needsResponsesBridge,
+  responsesRequestToChat,
+  chatResponseToResponses,
+  ChatToResponsesSseTransform,
+} from "./bridge/responses-chat-bridge.js";
 
 // Shared keepAlive agents for connection pooling. Without these, every
 // outgoing request opens a new TCP connection, causing TIME_WAIT
@@ -144,8 +150,19 @@ export async function forwardRequest(
     const providerPricing = getModelPricing(provider.models.find((m) => getModelId(m) === model)!);
     const { key: selectedKey, index: apiKeyIndex } = selectApiKey(provider);
     const upstreamHeaders = buildTargetHeaders(provider, selectedKey, c.req.raw.headers);
-    const targetUrl = `${provider.baseUrl}${targetPath}`;
-    const attemptBody = buildAttemptBody(body, provider, isResponsesApi, isStreaming);
+    // Bridge a Responses entry to Chat Completions when the provider asks for
+    // it. Per-attempt (not per-request) so a fallback chain can mix bridged
+    // and non-bridged providers. The bridge only applies to openai providers
+    // serving a Responses entry; everything else is verbatim pass-through.
+    const bridge = needsResponsesBridge(provider, isResponsesApi);
+    const effectiveTargetPath = bridge ? "/chat/completions" : targetPath;
+    const targetUrl = `${provider.baseUrl}${effectiveTargetPath}`;
+    const convertedBody = bridge ? responsesRequestToChat(body) : body;
+    // buildAttemptBody adds stream_options.include_usage for Chat Completions
+    // streaming. When bridging, convertedBody is already chat-shaped, so pass
+    // isResponsesApi=false so the usage option is added (Codex relies on the
+    // final usage chunk to populate response.completed.usage).
+    const attemptBody = buildAttemptBody(convertedBody, provider, bridge ? false : isResponsesApi, isStreaming);
 
     writeLog(requestId, {
       type: "attempt_request",
@@ -165,6 +182,7 @@ export async function forwardRequest(
       attemptBody,
       isStreaming,
       isResponsesApi,
+      bridge,
       requestId,
       startTime,
       token,
@@ -243,6 +261,10 @@ interface AttemptParams {
   attemptBody: any;
   isStreaming: boolean;
   isResponsesApi: boolean;
+  // True when this attempt bridges Responses -> Chat Completions. The
+  // request body is already converted by the caller; the response (and
+  // streaming SSE) must be converted back to Responses format here.
+  bridge: boolean;
   requestId: string;
   startTime: number;
   token: { key: string };
@@ -268,7 +290,7 @@ interface AttemptParams {
 async function attemptProvider(params: AttemptParams): Promise<AttemptResult> {
   const {
     c, provider, targetUrl, upstreamHeaders, attemptBody, isStreaming, isResponsesApi,
-    requestId, startTime, token, logFile, apiKeyIndex, providerPricing,
+    bridge, requestId, startTime, token, logFile, apiKeyIndex, providerPricing,
     agent, customTags, routeTrace, model, attemptIndex,
   } = params;
 
@@ -278,6 +300,11 @@ async function attemptProvider(params: AttemptParams): Promise<AttemptResult> {
         targetUrl, upstreamHeaders, body: attemptBody, requestId, provider,
         model, token, startTime, logFile, apiKeyIndex, pricing: providerPricing,
         agent, customTags, routeTrace, attemptIndex, upstreamSignal: params.upstreamSignal,
+        // When bridging, pipe upstream Chat Completions SSE through the
+        // converter before the logging-capture transform. The capture then
+        // sees Responses-format bytes, which asyncParseBufferForLog already
+        // understands (response.output_text.delta / response.completed).
+        streamTransform: bridge ? new ChatToResponsesSseTransform(model) : undefined,
       });
       if (result.kind === "retryable") return result;
       routeTrace.push({ provider: provider.id, status: 200, latencyMs: 0 });
@@ -308,7 +335,11 @@ async function attemptProvider(params: AttemptParams): Promise<AttemptResult> {
     const respHeaders: Record<string, string> = {};
     response.headers.forEach((value, key) => { respHeaders[key] = value; });
     const latencyMs = Date.now() - startTime;
-    const body = await decompressJson(response);
+    const rawBody = await decompressJson(response);
+    // Convert Chat Completions -> Responses when bridging. extractUsage()
+    // reads the converted usage shape via its ?? fallback chain, so metrics
+    // and logging work without a special case.
+    const body = bridge ? chatResponseToResponses(rawBody, "resp_" + requestId) : rawBody;
     const usage = extractUsage(body, provider.type);
 
     writeLog(requestId, {
@@ -376,6 +407,10 @@ interface RawStreamPassthroughParams {
   routeTrace?: RouteTraceEntry[];
   attemptIndex: number;
   upstreamSignal: AbortSignal;
+  // Optional transform inserted between upstream and the logging-capture
+  // transform. Used by the Responses->Chat bridge to convert Chat
+  // Completions SSE into Responses SSE in-stream. Undefined = verbatim.
+  streamTransform?: Transform;
 }
 
 // Same-protocol streaming pass-through. Pipes the upstream body through
@@ -385,6 +420,7 @@ function rawStreamPassthrough(params: RawStreamPassthroughParams): Promise<Attem
   const {
     targetUrl, upstreamHeaders, body, requestId, provider, model, token,
     startTime, logFile, apiKeyIndex, pricing, agent, customTags, routeTrace, attemptIndex, upstreamSignal,
+    streamTransform,
   } = params;
 
   const url = new URL(targetUrl);
@@ -392,9 +428,15 @@ function rawStreamPassthrough(params: RawStreamPassthroughParams): Promise<Attem
 
   return new Promise((resolve) => {
     const keepAliveAgent = url.protocol === "https:" ? httpsAgent : httpAgent;
+    // When bridging streaming, the streamTransform must parse the upstream
+    // SSE as text - so force the upstream to send uncompressed (identity).
+    // The converted Responses SSE we emit is itself uncompressed, so we also
+    // drop any content-encoding from the passthrough headers below.
+    const reqHeaders: Record<string, string> = { ...upstreamHeaders, "content-type": "application/json" };
+    if (streamTransform) reqHeaders["accept-encoding"] = "identity";
     const req = reqFn(url, {
       method: "POST",
-      headers: { ...upstreamHeaders, "content-type": "application/json" },
+      headers: reqHeaders,
       agent: keepAliveAgent,
     }, (res) => {
       if (upstreamSignal.aborted) {
@@ -438,6 +480,14 @@ function rawStreamPassthrough(params: RawStreamPassthroughParams): Promise<Attem
           passthroughHeaders.set(key, Array.isArray(val) ? val.join(", ") : val);
         }
       }
+      // Bridging converts the body in-stream; the output is uncompressed
+      // Responses SSE, so a stale upstream content-encoding/content-length
+      // must not be forwarded to the client.
+      if (streamTransform) {
+        passthroughHeaders.delete("content-encoding");
+        passthroughHeaders.delete("content-length");
+        passthroughHeaders.set("content-type", "text/event-stream; charset=utf-8");
+      }
 
       // Time To First Byte: capture the first chunk through Transform so
       // the recorded TTFT reflects actual upstream latency, not when the
@@ -461,7 +511,12 @@ function rawStreamPassthrough(params: RawStreamPassthroughParams): Promise<Attem
         },
       });
 
-      const stream = Readable.toWeb(res.pipe(passthrough) as unknown as Readable) as ReadableStream<Uint8Array>;
+      // Pipe chain: upstream -> [streamTransform (bridge only)] -> capture.
+      // The capture transform records bytes for the async log parse; when
+      // bridging it records the CONVERTED Responses SSE, which the log
+      // parser already understands.
+      const sourceStream = streamTransform ? res.pipe(streamTransform) : res;
+      const stream = Readable.toWeb(sourceStream.pipe(passthrough) as unknown as Readable) as ReadableStream<Uint8Array>;
       const ttftMs = (firstChunkAt ?? Date.now()) - startTime;
       resolve({ kind: "done", response: new Response(stream, { status, headers: passthroughHeaders }), ttftMs });
     });

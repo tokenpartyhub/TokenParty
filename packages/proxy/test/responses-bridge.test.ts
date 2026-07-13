@@ -1,0 +1,355 @@
+import { describe, it } from "node:test";
+import assert from "node:assert/strict";
+import http from "node:http";
+import { AddressInfo } from "node:net";
+import path from "node:path";
+import os from "node:os";
+import fs from "node:fs";
+import { Readable } from "node:stream";
+import { _setConfigForTest } from "../src/config.js";
+import { initDb } from "../src/store/db.js";
+import { createServer } from "../src/server.js";
+import type { Config } from "../src/types/config.js";
+import {
+  responsesRequestToChat,
+  chatResponseToResponses,
+  ChatToResponsesSseTransform,
+  needsResponsesBridge,
+} from "../src/proxy/bridge/responses-chat-bridge.js";
+
+// --- pure-function unit tests ---
+
+describe("responsesRequestToChat (text-only)", () => {
+  it("converts input string to a user message", () => {
+    const out = responsesRequestToChat({ model: "m", input: "hello" });
+    assert.deepEqual(out.messages, [{ role: "user", content: "hello" }]);
+    assert.equal(out.model, "m");
+  });
+
+  it("converts instructions to a leading system message", () => {
+    const out = responsesRequestToChat({ model: "m", instructions: "be brief", input: "hi" });
+    assert.deepEqual(out.messages, [
+      { role: "system", content: "be brief" },
+      { role: "user", content: "hi" },
+    ]);
+  });
+
+  it("converts input array of message items, joining text parts", () => {
+    const out = responsesRequestToChat({
+      model: "m",
+      input: [
+        { type: "message", role: "developer", content: [{ type: "input_text", text: "perm" }] },
+        { type: "message", role: "user", content: [{ type: "input_text", text: "a" }, { type: "output_text", text: "b" }] },
+      ],
+    });
+    assert.deepEqual(out.messages, [
+      { role: "developer", content: "perm" },
+      { role: "user", content: "ab" },
+    ]);
+  });
+
+  it("maps max_output_tokens -> max_tokens and passes through stream/temperature/top_p", () => {
+    const out = responsesRequestToChat({ model: "m", input: "x", stream: true, temperature: 0.5, top_p: 0.9, max_output_tokens: 123 });
+    assert.equal(out.max_tokens, 123);
+    assert.equal(out.stream, true);
+    assert.equal(out.temperature, 0.5);
+    assert.equal(out.top_p, 0.9);
+  });
+
+  it("drops tools / tool_choice / parallel_tool_calls / reasoning (Phase 1)", () => {
+    const out = responsesRequestToChat({
+      model: "m", input: "x",
+      tools: [{ type: "function", name: "exec", parameters: {} }],
+      tool_choice: "auto",
+      parallel_tool_calls: false,
+      reasoning: { effort: "medium" },
+      store: false,
+    });
+    assert.equal(out.tools, undefined);
+    assert.equal(out.tool_choice, undefined);
+    assert.equal(out.parallel_tool_calls, undefined);
+    assert.equal(out.reasoning, undefined);
+    assert.equal(out.store, undefined);
+  });
+
+  it("drops non-message input items (function_call / function_call_output) in Phase 1", () => {
+    const out = responsesRequestToChat({
+      model: "m",
+      input: [
+        { type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] },
+        { type: "function_call", call_id: "c1", name: "exec", arguments: "{}" },
+        { type: "function_call_output", call_id: "c1", output: "done" },
+      ],
+    });
+    assert.deepEqual(out.messages, [{ role: "user", content: "hi" }]);
+  });
+});
+
+describe("chatResponseToResponses (non-streaming)", () => {
+  it("converts choices[0].message.content to an output_text message", () => {
+    const out = chatResponseToResponses(
+      { model: "m", choices: [{ message: { content: "hello" } }] },
+      "resp_123",
+    );
+    assert.equal(out.id, "resp_123");
+    assert.equal(out.object, "response");
+    assert.equal(out.status, "completed");
+    assert.equal(out.output[0].type, "message");
+    assert.equal(out.output[0].role, "assistant");
+    assert.equal(out.output[0].content[0].type, "output_text");
+    assert.equal(out.output[0].content[0].text, "hello");
+  });
+
+  it("maps chat usage to responses usage shape", () => {
+    const out = chatResponseToResponses(
+      {
+        model: "m",
+        choices: [{ message: { content: "x" } }],
+        usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8, prompt_tokens_details: { cached_tokens: 2 } },
+      },
+      "resp_1",
+    );
+    assert.equal(out.usage.input_tokens, 5);
+    assert.equal(out.usage.output_tokens, 3);
+    assert.equal(out.usage.total_tokens, 8);
+    assert.equal(out.usage.cache_read_input_tokens, 2);
+  });
+
+  it("handles missing content and missing usage gracefully", () => {
+    const out = chatResponseToResponses({ model: "m", choices: [{ message: {} }] }, "resp_1");
+    assert.equal(out.output[0].content[0].text, "");
+    assert.equal(out.usage.input_tokens, 0);
+  });
+});
+
+// --- SSE transform unit test ---
+
+// Parse `event: t\ndata: {...}\n\n` blocks into [{event, data}].
+function parseSse(text: string): { event: string; data: any }[] {
+  const events: { event: string; data: any }[] = [];
+  for (const block of text.split("\n\n")) {
+    if (!block.trim()) continue;
+    let event = "";
+    const dataLines: string[] = [];
+    for (const line of block.split("\n")) {
+      if (line.startsWith("event: ")) event = line.slice(7);
+      else if (line.startsWith("data: ")) dataLines.push(line.slice(6));
+    }
+    if (event && dataLines.length) {
+      try { events.push({ event, data: JSON.parse(dataLines.join("\n")) }); } catch {}
+    }
+  }
+  return events;
+}
+
+describe("ChatToResponsesSseTransform", () => {
+  it("emits created -> deltas -> completed with accumulated text and usage", async () => {
+    const input = [
+      `data: ${JSON.stringify({ choices: [{ delta: { role: "assistant", content: "Hello" } }] })}\n\n`,
+      `data: ${JSON.stringify({ choices: [{ delta: { content: " world" } }] })}\n\n`,
+      `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 } })}\n\n`,
+      `data: [DONE]\n\n`,
+    ].join("");
+    const transform = new ChatToResponsesSseTransform("m");
+    const output = await Readable.from(input).pipe(transform).toArray();
+    const text = Buffer.concat(output.map((b: any) => Buffer.from(b))).toString("utf-8");
+    const events = parseSse(text);
+
+    const types = events.map((e) => e.event);
+    assert.ok(types.includes("response.created"));
+    assert.ok(types.includes("response.output_text.delta"));
+    assert.ok(types.includes("response.completed"));
+
+    const deltas = events.filter((e) => e.event === "response.output_text.delta");
+    assert.equal(deltas.reduce((s, e) => s + e.data.delta, ""), "Hello world");
+
+    const completed = events.find((e) => e.event === "response.completed");
+    assert.equal(completed.data.response.usage.input_tokens, 5);
+    assert.equal(completed.data.response.usage.output_tokens, 2);
+    assert.equal(completed.data.response.output[0].content[0].text, "Hello world");
+  });
+
+  it("finishes on stream end even without [DONE]", async () => {
+    const input = `data: ${JSON.stringify({ choices: [{ delta: { content: "x" } }] })}\n\n`;
+    const transform = new ChatToResponsesSseTransform("m");
+    const output = await Readable.from(input).pipe(transform).toArray();
+    const text = Buffer.concat(output.map((b: any) => Buffer.from(b))).toString("utf-8");
+    const events = parseSse(text);
+    assert.ok(events.some((e) => e.event === "response.completed"));
+    assert.equal(events.find((e) => e.event === "response.output_text.delta")?.data.delta, "x");
+  });
+});
+
+// --- integration via the real server ---
+
+class MockUpstream {
+  received: Array<{ path: string; method: string; body: string }> = [];
+  server: http.Server;
+  port = 0;
+  // Handler returns {status, headers, body} where body may be a string
+  // (written verbatim, for SSE) or an object (JSON-encoded).
+  handler: (req: http.IncomingMessage, body: string) => { status: number; headers?: Record<string, string>; body: any };
+
+  constructor(handler: MockUpstream["handler"]) {
+    this.handler = handler;
+    this.server = http.createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (c) => chunks.push(c));
+      req.on("end", () => {
+        const body = Buffer.concat(chunks).toString("utf-8");
+        this.received.push({ path: req.url ?? "/", method: req.method ?? "?", body });
+        const r = this.handler(req, body);
+        const out = typeof r.body === "string" ? r.body : JSON.stringify(r.body ?? {});
+        res.writeHead(r.status, { "content-type": "application/json", ...(r.headers ?? {}) });
+        res.end(out);
+      });
+    });
+  }
+
+  async listen(): Promise<void> {
+    await new Promise<void>((resolve) => this.server.listen(0, "127.0.0.1", resolve));
+    this.port = (this.server.address() as AddressInfo).port;
+  }
+  url(p: string): string { return `http://127.0.0.1:${this.port}${p}`; }
+  async close(): Promise<void> { await new Promise<void>((r) => this.server.close(() => r())); }
+}
+
+// Streaming variant: the handler writes SSE chunks then ends.
+class StreamingMockUpstream {
+  received: Array<{ path: string; body: string }> = [];
+  server: http.Server;
+  port = 0;
+  chunks: string[];
+  constructor(chunks: string[]) { this.chunks = chunks; this.server = http.createServer(this.handle); }
+  handle = (req: http.IncomingMessage, res: http.ServerResponse) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (c) => chunks.push(c));
+    req.on("end", () => {
+      this.received.push({ path: req.url ?? "/", body: Buffer.concat(chunks).toString("utf-8") });
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      for (const c of this.chunks) res.write(c);
+      res.end();
+    });
+  };
+  async listen(): Promise<void> {
+    await new Promise<void>((resolve) => this.server.listen(0, "127.0.0.1", resolve));
+    this.port = (this.server.address() as AddressInfo).port;
+  }
+  url(p: string): string { return `http://127.0.0.1:${this.port}${p}`; }
+  async close(): Promise<void> { await new Promise<void>((r) => this.server.close(() => r())); }
+}
+
+function makeBridgedConfig(upstreamUrl: string, dataDir: string): Config {
+  return {
+    server: {
+      port: 0, host: "127.0.0.1",
+      logDir: path.join(dataDir, "logs"), dataDir,
+      upstreamTimeoutMs: 30_000, streamingUpstreamTimeoutMs: 300_000,
+    },
+    providers: [
+      {
+        id: "bridged", type: "openai", name: "bridged",
+        apiKey: "sk-test", baseUrl: upstreamUrl,
+        models: [{ id: "test-model", priority: 1 }],
+        enabled: true, group: "default", currency: "USD",
+        responsesToChat: true,
+      },
+    ],
+    tokens: [{ key: "tp-test", name: "tester", allowedProviders: ["*"], enabled: true }],
+  };
+}
+
+describe("integration: /v1/responses -> /chat/completions bridge", () => {
+  let app: ReturnType<typeof createServer>;
+
+  it("needsResponsesBridge: only openai + responsesToChat + responses entry", () => {
+    assert.equal(needsResponsesBridge({ type: "openai", responsesToChat: true } as any, true), true);
+    assert.equal(needsResponsesBridge({ type: "openai", responsesToChat: true } as any, false), false);
+    assert.equal(needsResponsesBridge({ type: "openai", responsesToChat: false } as any, true), false);
+    assert.equal(needsResponsesBridge({ type: "anthropic", responsesToChat: true } as any, true), false);
+  });
+
+  it("non-streaming: converts request to /chat/completions and response back to Responses", async () => {
+    const upstream = new MockUpstream((_req, _body) => ({
+      status: 200,
+      body: {
+        model: "test-model",
+        choices: [{ message: { content: "hi there" } }],
+        usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 },
+      },
+    }));
+    await upstream.listen();
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "tokenparty-bridge-"));
+    _setConfigForTest(makeBridgedConfig(upstream.url("/v1"), dataDir));
+    initDb();
+    app = createServer();
+    try {
+      const res = await app.request("/v1/responses", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer tp-test" },
+        body: JSON.stringify({ model: "test-model", instructions: "be brief", input: "hello", stream: false }),
+      });
+      assert.equal(res.status, 200);
+      const body = await res.json();
+      assert.equal(body.object, "response");
+      assert.equal(body.status, "completed");
+      assert.equal(body.output[0].content[0].text, "hi there");
+      assert.equal(body.usage.input_tokens, 3);
+      assert.equal(body.usage.output_tokens, 2);
+
+      // upstream received /chat/completions with a messages body (not input)
+      assert.equal(upstream.received[0].path, "/v1/chat/completions");
+      const sent = JSON.parse(upstream.received[0].body);
+      assert.ok(Array.isArray(sent.messages));
+      assert.equal(sent.input, undefined);
+      assert.deepEqual(sent.messages[0], { role: "system", content: "be brief" });
+      assert.deepEqual(sent.messages[1], { role: "user", content: "hello" });
+    } finally {
+      fs.rmSync(dataDir, { recursive: true, force: true });
+      await upstream.close();
+    }
+  });
+
+  it("streaming: converts chat SSE chunks to Responses SSE events", async () => {
+    const sseChunks = [
+      `data: ${JSON.stringify({ choices: [{ delta: { role: "assistant", content: "Hel" } }] })}\n\n`,
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "lo" } }] })}\n\n`,
+      `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 4, completion_tokens: 1, total_tokens: 5 } })}\n\n`,
+      `data: [DONE]\n\n`,
+    ];
+    const upstream = new StreamingMockUpstream(sseChunks);
+    await upstream.listen();
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "tokenparty-bridge-"));
+    _setConfigForTest(makeBridgedConfig(upstream.url("/v1"), dataDir));
+    initDb();
+    app = createServer();
+    try {
+      const res = await app.request("/v1/responses", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer tp-test" },
+        body: JSON.stringify({ model: "test-model", input: "hi", stream: true }),
+      });
+      assert.equal(res.status, 200);
+      assert.match(res.headers.get("content-type") ?? "", /text\/event-stream/);
+      const text = await res.text();
+      const events = parseSse(text);
+      const types = events.map((e) => e.event);
+      assert.ok(types.includes("response.created"));
+      assert.ok(types.includes("response.output_text.delta"));
+      assert.ok(types.includes("response.completed"));
+      const deltas = events.filter((e) => e.event === "response.output_text.delta").map((e) => e.data.delta).join("");
+      assert.equal(deltas, "Hello");
+      const completed = events.find((e) => e.event === "response.completed");
+      assert.equal(completed.data.response.usage.input_tokens, 4);
+
+      // upstream got /chat/completions with stream_options.include_usage
+      assert.equal(upstream.received[0].path, "/v1/chat/completions");
+      const sent = JSON.parse(upstream.received[0].body);
+      assert.equal(sent.stream, true);
+      assert.deepEqual(sent.stream_options, { include_usage: true });
+    } finally {
+      fs.rmSync(dataDir, { recursive: true, force: true });
+      await upstream.close();
+    }
+  });
+});

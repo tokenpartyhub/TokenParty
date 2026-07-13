@@ -13,6 +13,7 @@ interface Provider {
   enabled: boolean;
   group?: string;
   currency?: string;
+  responsesToChat?: boolean;
 }
 
 function getModelId(m: ModelConfig): string {
@@ -381,6 +382,20 @@ export default function Providers() {
                   </div>
                 </div>
                 <Field label="Base URL" value={editing.baseUrl ?? ""} onChange={(v) => setEditing({ ...editing, baseUrl: v })} />
+                {editing.type === "openai" && (
+                  <label className="flex items-start gap-2 text-sm text-gray-600 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={editing.responsesToChat ?? false}
+                      onChange={(e) => setEditing({ ...editing, responsesToChat: e.target.checked })}
+                      className="mt-0.5"
+                    />
+                    <span>
+                      Responses → Chat Completions 转换
+                      <span className="block text-xs text-gray-400">上游不支持 /v1/responses 时启用;将 Codex 等 Responses 客户端的请求转为 /chat/completions</span>
+                    </span>
+                  </label>
+                )}
                 <div>
                   <label className="block text-sm text-gray-600 mb-1">API Keys</label>
                   <div className="space-y-1.5">
