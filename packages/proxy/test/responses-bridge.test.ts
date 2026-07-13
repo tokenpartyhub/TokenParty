@@ -56,32 +56,51 @@ describe("responsesRequestToChat (text-only)", () => {
     assert.equal(out.top_p, 0.9);
   });
 
-  it("drops tools / tool_choice / parallel_tool_calls / reasoning (Phase 1)", () => {
+  it("converts tools / tool_choice / parallel_tool_calls / reasoning_effort", () => {
     const out = responsesRequestToChat({
       model: "m", input: "x",
-      tools: [{ type: "function", name: "exec", parameters: {} }],
+      tools: [{ type: "function", name: "exec", description: "run", parameters: { type: "object" }, strict: false }],
       tool_choice: "auto",
       parallel_tool_calls: false,
       reasoning: { effort: "medium" },
       store: false,
     });
-    assert.equal(out.tools, undefined);
-    assert.equal(out.tool_choice, undefined);
-    assert.equal(out.parallel_tool_calls, undefined);
-    assert.equal(out.reasoning, undefined);
+    assert.deepEqual(out.tools, [{ type: "function", function: { name: "exec", description: "run", parameters: { type: "object" }, strict: false } }]);
+    assert.equal(out.tool_choice, "auto");
+    assert.equal(out.parallel_tool_calls, false);
+    assert.equal(out.reasoning_effort, "medium");
+    // store has no Chat equivalent - dropped
     assert.equal(out.store, undefined);
   });
 
-  it("drops non-message input items (function_call / function_call_output) in Phase 1", () => {
+  it("converts function_call / function_call_output input items to assistant tool_calls + tool messages", () => {
     const out = responsesRequestToChat({
       model: "m",
       input: [
         { type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] },
-        { type: "function_call", call_id: "c1", name: "exec", arguments: "{}" },
-        { type: "function_call_output", call_id: "c1", output: "done" },
+        { type: "function_call", call_id: "c1", name: "exec", arguments: '{"cmd":"ls"}' },
+        { type: "function_call_output", call_id: "c1", output: "file1\n" },
       ],
     });
-    assert.deepEqual(out.messages, [{ role: "user", content: "hi" }]);
+    assert.deepEqual(out.messages, [
+      { role: "user", content: "hi" },
+      { role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "exec", arguments: '{"cmd":"ls"}' } }] },
+      { role: "tool", tool_call_id: "c1", content: "file1\n" },
+    ]);
+  });
+
+  it("merges consecutive function_call items into one assistant message (parallel tool calls)", () => {
+    const out = responsesRequestToChat({
+      model: "m",
+      input: [
+        { type: "function_call", call_id: "c1", name: "exec", arguments: "{}" },
+        { type: "function_call", call_id: "c2", name: "read", arguments: "{}" },
+      ],
+    });
+    assert.equal(out.messages.length, 1);
+    assert.equal(out.messages[0].role, "assistant");
+    assert.equal(out.messages[0].tool_calls.length, 2);
+    assert.deepEqual(out.messages[0].tool_calls.map((t: any) => t.id), ["c1", "c2"]);
   });
 });
 
@@ -119,6 +138,50 @@ describe("chatResponseToResponses (non-streaming)", () => {
     const out = chatResponseToResponses({ model: "m", choices: [{ message: {} }] }, "resp_1");
     assert.equal(out.output[0].content[0].text, "");
     assert.equal(out.usage.input_tokens, 0);
+  });
+
+  it("converts tool_calls to function_call output items (no empty message)", () => {
+    const out = chatResponseToResponses(
+      {
+        model: "m",
+        choices: [{
+          message: {
+            content: null,
+            tool_calls: [{ id: "call_1", type: "function", function: { name: "exec_command", arguments: '{"cmd":"ls"}' } }],
+          },
+          finish_reason: "tool_calls",
+        }],
+        usage: { prompt_tokens: 10, completion_tokens: 4, total_tokens: 14 },
+      },
+      "resp_1",
+    );
+    // No text -> no message item, only the function_call.
+    assert.equal(out.output.length, 1);
+    assert.equal(out.output[0].type, "function_call");
+    assert.equal(out.output[0].call_id, "call_1");
+    assert.equal(out.output[0].name, "exec_command");
+    assert.equal(out.output[0].arguments, '{"cmd":"ls"}');
+    assert.equal(out.usage.input_tokens, 10);
+  });
+
+  it("emits both message and function_call items for mixed text + tool_calls", () => {
+    const out = chatResponseToResponses(
+      {
+        model: "m",
+        choices: [{
+          message: {
+            content: "Running it.",
+            tool_calls: [{ id: "call_1", type: "function", function: { name: "exec", arguments: "{}" } }],
+          },
+        }],
+      },
+      "resp_1",
+    );
+    assert.equal(out.output.length, 2);
+    assert.equal(out.output[0].type, "message");
+    assert.equal(out.output[0].content[0].text, "Running it.");
+    assert.equal(out.output[1].type, "function_call");
+    assert.equal(out.output[1].name, "exec");
   });
 });
 
@@ -177,6 +240,48 @@ describe("ChatToResponsesSseTransform", () => {
     const events = parseSse(text);
     assert.ok(events.some((e) => e.event === "response.completed"));
     assert.equal(events.find((e) => e.event === "response.output_text.delta")?.data.delta, "x");
+  });
+
+  it("emits function_call output_item + arguments delta/done for tool_call deltas", async () => {
+    // A pure tool-call response (no text): no message item should be opened.
+    const input = [
+      `data: ${JSON.stringify({ choices: [{ delta: { role: "assistant", content: null, tool_calls: [{ index: 0, id: "call_abc", type: "function", function: { name: "exec", arguments: "" } }] } }] })}\n\n`,
+      `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: "{\"" } }] } }] })}\n\n`,
+      `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: "cmd\":\"ls\"}" } }] } }] })}\n\n`,
+      `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }], usage: { prompt_tokens: 6, completion_tokens: 2, total_tokens: 8 } })}\n\n`,
+      `data: [DONE]\n\n`,
+    ].join("");
+    const transform = new ChatToResponsesSseTransform("m");
+    const output = await Readable.from(input).pipe(transform).toArray();
+    const text = Buffer.concat(output.map((b: any) => Buffer.from(b))).toString("utf-8");
+    const events = parseSse(text);
+    const byType: Record<string, any[]> = {};
+    for (const e of events) {
+      (byType[e.event] ??= []).push(e.data);
+    }
+
+    // No message item for pure tool-call streams.
+    assert.equal(byType["response.output_item.added"]?.length, 1);
+    assert.equal(byType["response.output_item.added"][0].item.type, "function_call");
+    assert.equal(byType["response.output_item.added"][0].item.name, "exec");
+    assert.equal(byType["response.output_item.added"][0].item.call_id, "call_abc");
+
+    // Arguments accumulated from the deltas.
+    const argDeltas = (byType["response.function_call_arguments.delta"] ?? []).map((d) => d.delta).join("");
+    assert.equal(argDeltas, '{"cmd":"ls"}');
+
+    // Closing events.
+    const argDone = byType["response.function_call_arguments.done"]?.[0];
+    assert.equal(argDone?.arguments, '{"cmd":"ls"}');
+    const itemDone = byType["response.output_item.done"]?.[0];
+    assert.equal(itemDone?.item.type, "function_call");
+    assert.equal(itemDone?.item.arguments, '{"cmd":"ls"}');
+
+    // response.completed output should contain just the function_call (no message).
+    const completed = byType["response.completed"]?.[0];
+    assert.equal(completed.response.output.length, 1);
+    assert.equal(completed.response.output[0].type, "function_call");
+    assert.equal(completed.response.usage.input_tokens, 6);
   });
 });
 
