@@ -120,25 +120,62 @@ function mapUsage(usage: any): any {
   };
 }
 
+// Split a model text blob into reasoning content (inside <think>...</think>)
+// and visible text (everything else). The reasoning tag is what some openai
+// providers emit around chain-of-thought tokens; Codex's Responses consumer
+// wants that surfaced as a `reasoning` output item, not as raw visible text.
+// Multiple or malformed tags fall back to "everything outside the first
+// balanced pair is visible".
+const REASONING_OPEN = "<think>" as const;
+const REASONING_CLOSE = "</think>" as const;
+function parseReasoning(text: string): { reasoning: string; visible: string } {
+  if (!text) return { reasoning: "", visible: "" };
+  const openIdx = text.indexOf(REASONING_OPEN);
+  if (openIdx === -1) return { reasoning: "", visible: text };
+  const closeIdx = text.indexOf(REASONING_CLOSE, openIdx + REASONING_OPEN.length);
+  if (closeIdx === -1) {
+    // Unbalanced open tag with no close — treat the rest as reasoning,
+    // nothing as visible (avoids leaking a half-baked <think> into output).
+    return { reasoning: text.slice(openIdx + REASONING_OPEN.length), visible: text.slice(0, openIdx) };
+  }
+  const reasoning = text.slice(openIdx + REASONING_OPEN.length, closeIdx);
+  const visible = text.slice(0, openIdx) + text.slice(closeIdx + REASONING_CLOSE.length);
+  return { reasoning, visible };
+}
+
 // Convert a non-streaming Chat Completions response into a Responses API
-// response object. Text content maps to a `message` output item; each
-// `tool_calls` entry maps to a `function_call` output item. An empty
-// message item is only emitted when there is no tool_calls (so a pure
-// tool-call response doesn't carry a redundant empty message).
+// response object. `<think>...</think>` chunks in the content become a
+// `reasoning` output item; the rest of the content goes into a `message`
+// output item. Each `tool_calls` entry maps to a `function_call` output
+// item. An empty message item is only emitted when there is no tool_calls
+// (so a pure tool-call response doesn't carry a redundant empty message).
+// Top-level `output_text` aggregates visible text across message items so
+// callers that read it as a convenience field (OpenAI Responses SDK) get
+// the same value the model intended.
 export function chatResponseToResponses(body: any, respId: string): any {
   const choice = body?.choices?.[0];
   const msg = choice?.message ?? {};
-  const text = msg.content ?? "";
+  const rawText = typeof msg.content === "string" ? msg.content : "";
+  const { reasoning, visible } = parseReasoning(rawText);
   const toolCalls = Array.isArray(msg.tool_calls) ? msg.tool_calls : [];
 
   const output: any[] = [];
-  if (text || toolCalls.length === 0) {
+  if (reasoning) {
+    output.push({
+      id: "rs_" + nanoid(24),
+      type: "reasoning",
+      summary: [{ type: "summary_text", text: reasoning }],
+      content: [{ type: "reasoning_text", text: reasoning }],
+      status: "completed",
+    });
+  }
+  if (visible || (toolCalls.length === 0 && !reasoning)) {
     output.push({
       id: "msg_" + nanoid(24),
       type: "message",
       status: "completed",
       role: "assistant",
-      content: [{ type: "output_text", text }],
+      content: [{ type: "output_text", text: visible, annotations: [] }],
     });
   }
   for (const tc of toolCalls) {
@@ -151,27 +188,37 @@ export function chatResponseToResponses(body: any, respId: string): any {
     });
   }
 
+  const outputText = output
+    .filter((o) => o.type === "message")
+    .flatMap((o: any) => (o.content ?? []).filter((p: any) => p.type === "output_text").map((p: any) => p.text))
+    .join("");
+
   return {
     id: respId,
     object: "response",
+    created_at: Math.floor(Date.now() / 1000),
     status: "completed",
     model: body?.model ?? "",
     output,
+    output_text: outputText,
     usage: mapUsage(body?.usage),
   };
 }
 
 // Streaming transform: consumes Chat Completions SSE bytes, emits Responses
-// SSE bytes. Handles both text content and tool calls:
-//   - text deltas  -> response.output_text.delta
-//   - tool_call deltas -> response.output_item.added (function_call) +
+// SSE bytes. Handles reasoning text (<think>...</think> chunks in the chat
+// content), visible text, and tool calls:
+//   - reasoning deltas  -> response.reasoning_summary_text.delta
+//   - visible deltas    -> response.output_text.delta
+//   - tool_call deltas  -> response.output_item.added (function_call) +
 //     response.function_call_arguments.delta
-// On finish: closes the message item (if any text), closes each function_call
-// item (arguments.done + output_item.done), then response.completed.
+// On finish: closes the reasoning item (if any), closes the message item
+// (if any), closes each function_call item, then response.completed.
 //
-// The message item is opened lazily (only when text actually arrives) so a
-// pure tool-call response doesn't carry an empty message. output_index is
-// assigned in arrival order across message + function_call items.
+// The reasoning item is opened lazily on the first <think> marker and the
+// message item is opened lazily on the first visible text delta. output_index
+// is assigned in arrival order across all item types. Reasoning comes before
+// the message in the output array, matching the OpenAI Responses order.
 //
 // The forwarder's async log parser already understands
 // response.output_text.delta (content) and response.completed (usage), so
@@ -183,6 +230,8 @@ interface ToolCallState {
   name: string;
   argsBuf: string;
 }
+
+type StreamMode = "pre" | "visible" | "thinking";
 
 export class ChatToResponsesSseTransform extends Transform {
   private buffer = "";
@@ -199,11 +248,28 @@ export class ChatToResponsesSseTransform extends Transform {
   // Ordered by Chat tool_call index. output_index is assigned on first seen.
   private toolCalls = new Map<number, ToolCallState>();
 
+  // Reasoning state. The <think> / </think> markers can straddle chunk
+  // boundaries, so we keep a small backtrack tail to disambiguate "think"
+  // (visible text) from "think<..." (opening marker).
+  private mode: StreamMode = "pre";
+  private tail = "";
+  private reasoningOpened = false;
+  // True once a reasoning item has been fully closed. Used to decide
+  // whether the final response.completed should carry a reasoning item
+  // (independent of `reasoningOpened`, which flips false on close so a
+  // second close attempt is a no-op).
+  private reasoningEmitted = false;
+  private reasoningItemId = "";
+  private reasoningOutputIndex = 0;
+  private reasoningBuf = "";
+  private createdAt = 0;
+
   constructor(model: string) {
     super();
     this.respId = "resp_" + nanoid(24);
     this.msgId = "msg_" + nanoid(24);
     this.model = model ?? "";
+    this.createdAt = Math.floor(Date.now() / 1000);
   }
 
   private writeEvent(eventType: string, data: any): void {
@@ -215,12 +281,19 @@ export class ChatToResponsesSseTransform extends Transform {
     this.started = true;
     this.writeEvent("response.created", {
       type: "response.created",
-      response: { id: this.respId, object: "response", status: "in_progress", model: this.model, output: [] },
+      response: {
+        id: this.respId,
+        object: "response",
+        created_at: this.createdAt,
+        status: "in_progress",
+        model: this.model,
+        output: [],
+      },
     });
   }
 
   // Open the assistant message item + output_text part lazily, on first
-  // text delta. Returns the message's output_index.
+  // visible text delta. Returns the message's output_index.
   private ensureMessageOpen(): number {
     if (this.messageOpened) return this.messageOutputIndex;
     this.messageOpened = true;
@@ -240,8 +313,171 @@ export class ChatToResponsesSseTransform extends Transform {
     return this.messageOutputIndex;
   }
 
+  // Open the reasoning item + first summary_text part. Called the first
+  // time a <think> marker is consumed.
+  private openReasoningItem(): void {
+    this.reasoningOpened = true;
+    this.reasoningItemId = "rs_" + nanoid(24);
+    this.reasoningOutputIndex = this.nextOutputIndex++;
+    this.reasoningBuf = "";
+    this.writeEvent("response.output_item.added", {
+      type: "response.output_item.added",
+      output_index: this.reasoningOutputIndex,
+      item: {
+        id: this.reasoningItemId,
+        type: "reasoning",
+        summary: [],
+        content: null,
+        status: "in_progress",
+      },
+    });
+    this.writeEvent("response.reasoning_summary_part.added", {
+      type: "response.reasoning_summary_part.added",
+      item_id: this.reasoningItemId,
+      output_index: this.reasoningOutputIndex,
+      summary_index: 0,
+      part: { type: "summary_text", text: "" },
+    });
+  }
+
+  private closeReasoningItem(): void {
+    if (!this.reasoningOpened) return;
+    this.reasoningOpened = false;
+    this.reasoningEmitted = true;
+    this.writeEvent("response.reasoning_summary_text.done", {
+      type: "response.reasoning_summary_text.done",
+      item_id: this.reasoningItemId,
+      output_index: this.reasoningOutputIndex,
+      summary_index: 0,
+      text: this.reasoningBuf,
+    });
+    this.writeEvent("response.reasoning_summary_part.done", {
+      type: "response.reasoning_summary_part.done",
+      item_id: this.reasoningItemId,
+      output_index: this.reasoningOutputIndex,
+      summary_index: 0,
+      part: { type: "summary_text", text: this.reasoningBuf },
+    });
+    this.writeEvent("response.output_item.done", {
+      type: "response.output_item.done",
+      output_index: this.reasoningOutputIndex,
+      item: {
+        id: this.reasoningItemId,
+        type: "reasoning",
+        summary: [{ type: "summary_text", text: this.reasoningBuf }],
+        content: null,
+        status: "completed",
+      },
+    });
+  }
+
+  // Emit a visible text delta. Opens the message item lazily.
+  private emitVisibleDelta(text: string): void {
+    if (!text) return;
+    const oi = this.ensureMessageOpen();
+    this.textBuf += text;
+    this.writeEvent("response.output_text.delta", {
+      type: "response.output_text.delta",
+      item_id: this.msgId,
+      output_index: oi,
+      content_index: 0,
+      delta: text,
+    });
+  }
+
+  // Emit a reasoning text delta. The reasoning item is already open here.
+  private emitReasoningDelta(text: string): void {
+    if (!text) return;
+    this.reasoningBuf += text;
+    this.writeEvent("response.reasoning_summary_text.delta", {
+      type: "response.reasoning_summary_text.delta",
+      item_id: this.reasoningItemId,
+      output_index: this.reasoningOutputIndex,
+      summary_index: 0,
+      delta: text,
+    });
+  }
+
+  // Find the longest prefix of `marker` that matches a suffix of `text`.
+  // Used to hold back a partial tag (e.g. "thin" might be the start of
+  // "<think>") until the next chunk confirms or denies.
+  private static matchingPrefixSuffix(marker: string, text: string): number {
+    const max = Math.min(marker.length, text.length);
+    for (let len = max; len > 0; len--) {
+      if (text.endsWith(marker.slice(0, len))) return len;
+    }
+    return 0;
+  }
+
+  // Process a chunk of chat text. Splits it into reasoning and visible
+  // segments on <think>...</think> boundaries. Tail buffer holds back
+  // a possible partial tag until the next chunk arrives.
+  private processText(text: string): void {
+    this.tail += text;
+    while (this.tail) {
+      if (this.mode === "pre" || this.mode === "visible") {
+        const idx = this.tail.indexOf(REASONING_OPEN);
+        if (idx === -1) {
+          const held = ChatToResponsesSseTransform.matchingPrefixSuffix(REASONING_OPEN, this.tail);
+          if (held === 0) {
+            this.emitVisibleDelta(this.tail);
+            this.tail = "";
+          } else if (held < this.tail.length) {
+            this.emitVisibleDelta(this.tail.slice(0, this.tail.length - held));
+            this.tail = this.tail.slice(-held);
+          } else {
+            // Whole tail is a held-back prefix of the open marker; wait
+            // for more input before flushing.
+            break;
+          }
+        } else {
+          this.emitVisibleDelta(this.tail.slice(0, idx));
+          this.tail = this.tail.slice(idx + REASONING_OPEN.length);
+          this.openReasoningItem();
+          this.mode = "thinking";
+        }
+      } else {
+        const idx = this.tail.indexOf(REASONING_CLOSE);
+        if (idx === -1) {
+          const held = ChatToResponsesSseTransform.matchingPrefixSuffix(REASONING_CLOSE, this.tail);
+          if (held === 0) {
+            this.emitReasoningDelta(this.tail);
+            this.tail = "";
+          } else if (held < this.tail.length) {
+            this.emitReasoningDelta(this.tail.slice(0, this.tail.length - held));
+            this.tail = this.tail.slice(-held);
+          } else {
+            // Whole tail is a held-back prefix of the close marker; wait
+            // for more input before flushing.
+            break;
+          }
+        } else {
+          this.emitReasoningDelta(this.tail.slice(0, idx));
+          this.tail = this.tail.slice(idx + REASONING_CLOSE.length);
+          this.closeReasoningItem();
+          this.mode = "visible";
+        }
+      }
+    }
+  }
+
+  // Flush any held-back tail text. At end of stream a partial <think>
+  // prefix or </think> prefix can no longer resolve into a real tag, so
+  // the held text is emitted under the current mode (visible or thinking).
+  private flushTail(): void {
+    if (!this.tail) return;
+    if (this.mode === "thinking") {
+      this.emitReasoningDelta(this.tail);
+    } else {
+      this.emitVisibleDelta(this.tail);
+    }
+    this.tail = "";
+  }
+
   private finish(): void {
     if (this.finished) return;
+    this.flushTail();
+    if (this.reasoningOpened) this.closeReasoningItem();
     this.finished = true;
 
     // Close the message item if it was opened.
@@ -268,7 +504,7 @@ export class ChatToResponsesSseTransform extends Transform {
           type: "message",
           status: "completed",
           role: "assistant",
-          content: [{ type: "output_text", text: this.textBuf }],
+          content: [{ type: "output_text", text: this.textBuf, annotations: [] }],
         },
       });
     }
@@ -295,35 +531,58 @@ export class ChatToResponsesSseTransform extends Transform {
       });
     }
 
-    // Build the final output array in output_index order.
-    const output: any[] = [];
+    // Build the final output array in output_index order so reasoning,
+    // message, and tool_calls all land in the order they were streamed.
+    const items: Array<{ idx: number; item: any }> = [];
+    if (this.reasoningEmitted) {
+      items.push({
+        idx: this.reasoningOutputIndex,
+        item: {
+          id: this.reasoningItemId,
+          type: "reasoning",
+          summary: [{ type: "summary_text", text: this.reasoningBuf }],
+          content: null,
+          status: "completed",
+        },
+      });
+    }
     if (this.messageOpened) {
-      output.push({
-        id: this.msgId,
-        type: "message",
-        status: "completed",
-        role: "assistant",
-        content: [{ type: "output_text", text: this.textBuf }],
+      items.push({
+        idx: this.messageOutputIndex,
+        item: {
+          id: this.msgId,
+          type: "message",
+          status: "completed",
+          role: "assistant",
+          content: [{ type: "output_text", text: this.textBuf, annotations: [] }],
+        },
       });
     }
     for (const tc of ordered) {
-      output.push({
-        id: tc.itemId,
-        type: "function_call",
-        call_id: tc.callId,
-        name: tc.name,
-        arguments: tc.argsBuf,
+      items.push({
+        idx: tc.outputIndex,
+        item: {
+          id: tc.itemId,
+          type: "function_call",
+          call_id: tc.callId,
+          name: tc.name,
+          arguments: tc.argsBuf,
+        },
       });
     }
+    items.sort((a, b) => a.idx - b.idx);
+    const output = items.map((x) => x.item);
 
     this.writeEvent("response.completed", {
       type: "response.completed",
       response: {
         id: this.respId,
         object: "response",
+        created_at: this.createdAt,
         status: "completed",
         model: this.model,
         output,
+        output_text: this.textBuf,
         usage: this.usage
           ? {
               input_tokens: this.usage.prompt_tokens ?? this.usage.input_tokens ?? 0,
@@ -375,17 +634,10 @@ export class ChatToResponsesSseTransform extends Transform {
     if (choice) {
       if (!this.started) this.start();
       const delta = choice.delta ?? {};
-      // Text content.
+      // Text content. Routed through the <think>/</think> splitter so
+      // chain-of-thought chunks become a `reasoning` item.
       if (typeof delta.content === "string" && delta.content.length > 0) {
-        const oi = this.ensureMessageOpen();
-        this.textBuf += delta.content;
-        this.writeEvent("response.output_text.delta", {
-          type: "response.output_text.delta",
-          item_id: this.msgId,
-          output_index: oi,
-          content_index: 0,
-          delta: delta.content,
-        });
+        this.processText(delta.content);
       }
       // Tool calls. Chat streams them as delta.tool_calls[{index, id?,
       // function?:{name?, arguments?}}] - the first chunk for an index

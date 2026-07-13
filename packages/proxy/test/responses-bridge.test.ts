@@ -200,6 +200,72 @@ describe("chatResponseToResponses (non-streaming)", () => {
     assert.equal(out.output[1].type, "function_call");
     assert.equal(out.output[1].name, "exec");
   });
+
+  it("splits <think>...</think> content into a reasoning item followed by a message item", () => {
+    const out = chatResponseToResponses(
+      {
+        model: "m",
+        choices: [{ message: { content: "<think>The user wants a greeting.</think>Hello there!" } }],
+      },
+      "resp_1",
+    );
+    assert.equal(out.output.length, 2);
+
+    const reasoning = out.output[0];
+    assert.equal(reasoning.type, "reasoning");
+    assert.equal(reasoning.status, "completed");
+    assert.equal(reasoning.summary.length, 1);
+    assert.equal(reasoning.summary[0].type, "summary_text");
+    assert.equal(reasoning.summary[0].text, "The user wants a greeting.");
+    assert.equal(reasoning.content.length, 1);
+    assert.equal(reasoning.content[0].type, "reasoning_text");
+    assert.equal(reasoning.content[0].text, "The user wants a greeting.");
+
+    const message = out.output[1];
+    assert.equal(message.type, "message");
+    assert.equal(message.content[0].type, "output_text");
+    assert.equal(message.content[0].text, "Hello there!");
+    assert.deepEqual(message.content[0].annotations, []);
+  });
+
+  it("reasoning-only content: emits reasoning item but no message", () => {
+    const out = chatResponseToResponses(
+      { model: "m", choices: [{ message: { content: "<think>just thinking</think>" } }] },
+      "resp_1",
+    );
+    assert.equal(out.output.length, 1);
+    assert.equal(out.output[0].type, "reasoning");
+    assert.equal(out.output[0].summary[0].text, "just thinking");
+  });
+
+  it("top-level output_text aggregates visible text across message items", () => {
+    const out = chatResponseToResponses(
+      { model: "m", choices: [{ message: { content: "<think>thinking</think>visible answer" } }] },
+      "resp_1",
+    );
+    assert.equal(out.output_text, "visible answer");
+    assert.equal(typeof out.created_at, "number");
+    assert.ok(out.created_at > 1_700_000_000);
+  });
+
+  it("reasoning with tool_call: reasoning item, no message, then function_call", () => {
+    const out = chatResponseToResponses(
+      {
+        model: "m",
+        choices: [{
+          message: {
+            content: "<think>plan</think>",
+            tool_calls: [{ id: "c1", type: "function", function: { name: "exec", arguments: "{}" } }],
+          },
+        }],
+      },
+      "resp_1",
+    );
+    assert.equal(out.output.length, 2);
+    assert.equal(out.output[0].type, "reasoning");
+    assert.equal(out.output[1].type, "function_call");
+    assert.equal(out.output_text, "");
+  });
 });
 
 // --- SSE transform unit test ---
@@ -299,6 +365,107 @@ describe("ChatToResponsesSseTransform", () => {
     assert.equal(completed.response.output.length, 1);
     assert.equal(completed.response.output[0].type, "function_call");
     assert.equal(completed.response.usage.input_tokens, 6);
+  });
+
+  it("splits <think>...</think> into a reasoning item + visible message", async () => {
+    const input = [
+      `data: ${JSON.stringify({ choices: [{ delta: { role: "assistant", content: "<think>" } }] })}\n\n`,
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "thinking " } }] })}\n\n`,
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "step" } }] })}\n\n`,
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "</think>" } }] })}\n\n`,
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "Hi!" } }] })}\n\n`,
+      `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 4, completion_tokens: 3, total_tokens: 7 } })}\n\n`,
+      `data: [DONE]\n\n`,
+    ].join("");
+    const transform = new ChatToResponsesSseTransform("m");
+    const output = await Readable.from(input).pipe(transform).toArray();
+    const text = Buffer.concat(output.map((b: any) => Buffer.from(b))).toString("utf-8");
+    const events = parseSse(text);
+    const byType: Record<string, any[]> = {};
+    for (const e of events) (byType[e.event] ??= []).push(e.data);
+
+    // Reasoning item is opened with the right shape.
+    const addedItems = byType["response.output_item.added"];
+    assert.equal(addedItems.length, 2);
+    const reasoningAdd = addedItems.find((d) => d.item.type === "reasoning");
+    const messageAdd = addedItems.find((d) => d.item.type === "message");
+    assert.ok(reasoningAdd);
+    assert.ok(messageAdd);
+    assert.equal(reasoningAdd.item.type, "reasoning");
+    assert.equal(reasoningAdd.item.status, "in_progress");
+    assert.deepEqual(reasoningAdd.item.summary, []);
+    assert.equal(reasoningAdd.item.content, null);
+
+    // summary_text deltas accumulate, and a summary_part.added opens the part.
+    assert.equal(byType["response.reasoning_summary_part.added"]?.length, 1);
+    const reasoningDeltas = (byType["response.reasoning_summary_text.delta"] ?? []).map((d) => d.delta).join("");
+    assert.equal(reasoningDeltas, "thinking step");
+    const reasoningDone = byType["response.reasoning_summary_text.done"]?.[0];
+    assert.equal(reasoningDone?.text, "thinking step");
+    assert.equal(byType["response.reasoning_summary_part.done"]?.[0]?.part.text, "thinking step");
+
+    // Visible text only lands in the message stream.
+    const messageDeltas = (byType["response.output_text.delta"] ?? []).map((d) => d.delta).join("");
+    assert.equal(messageDeltas, "Hi!");
+
+    // reasoning item closes before the message item closes.
+    const doneItems = byType["response.output_item.done"];
+    const reasoningDoneItem = doneItems.find((d) => d.item.type === "reasoning");
+    const messageDoneItem = doneItems.find((d) => d.item.type === "message");
+    assert.equal(reasoningDoneItem.item.summary[0].text, "thinking step");
+    assert.equal(reasoningDoneItem.item.status, "completed");
+    assert.equal(messageDoneItem.item.content[0].text, "Hi!");
+
+    // Final response carries both items in output_index order with
+    // top-level output_text aggregating only visible text.
+    const completed = byType["response.completed"][0];
+    assert.equal(completed.response.output.length, 2);
+    assert.equal(completed.response.output[0].type, "reasoning");
+    assert.equal(completed.response.output[0].summary[0].text, "thinking step");
+    assert.equal(completed.response.output[1].type, "message");
+    assert.equal(completed.response.output[1].content[0].text, "Hi!");
+    assert.equal(completed.response.output_text, "Hi!");
+    assert.equal(typeof completed.response.created_at, "number");
+  });
+
+  it("handles <think> split across chunk boundaries (partial open marker)", async () => {
+    // The first chunk ends with a prefix of the <think> marker ("<thin")
+    // and the second chunk completes it ("k>secret</think>"). The tail
+    // buffer must hold back "<thin" and not emit it as visible text.
+    const input = [
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "<thin" } }] })}\n\n`,
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "k>secret</think>" } }] })}\n\n`,
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "world" } }] })}\n\n`,
+      `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`,
+      `data: [DONE]\n\n`,
+    ].join("");
+    const transform = new ChatToResponsesSseTransform("m");
+    const output = await Readable.from(input).pipe(transform).toArray();
+    const text = Buffer.concat(output.map((b: any) => Buffer.from(b))).toString("utf-8");
+    const events = parseSse(text);
+    const byType: Record<string, any[]> = {};
+    for (const e of events) (byType[e.event] ??= []).push(e.data);
+
+    const reasoningDeltas = (byType["response.reasoning_summary_text.delta"] ?? []).map((d) => d.delta).join("");
+    assert.equal(reasoningDeltas, "secret");
+    const messageDeltas = (byType["response.output_text.delta"] ?? []).map((d) => d.delta).join("");
+    assert.equal(messageDeltas, "world");
+  });
+
+  it("flushes held-back text as visible when stream ends inside a possible marker", async () => {
+    // "think" is never followed by "<" + content; the held-back suffix
+    // must flush as visible text at end of stream.
+    const input = [
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "think about it" } }] })}\n\n`,
+      `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`,
+      `data: [DONE]\n\n`,
+    ].join("");
+    const transform = new ChatToResponsesSseTransform("m");
+    const output = await Readable.from(input).pipe(transform).toArray();
+    const text = Buffer.concat(output.map((b: any) => Buffer.from(b))).toString("utf-8");
+    const events = parseSse(text);
+    const messageDeltas = events.filter((e) => e.event === "response.output_text.delta").map((e) => e.data.delta).join("");
+    assert.equal(messageDeltas, "think about it");
   });
 });
 
@@ -469,6 +636,90 @@ describe("integration: /v1/responses -> /chat/completions bridge", () => {
       const sent = JSON.parse(upstream.received[0].body);
       assert.equal(sent.stream, true);
       assert.deepEqual(sent.stream_options, { include_usage: true });
+    } finally {
+      fs.rmSync(dataDir, { recursive: true, force: true });
+      await upstream.close();
+    }
+  });
+
+  it("non-streaming: upstream content with <think>...</think> is split into reasoning + message items", async () => {
+    const upstream = new MockUpstream((_req, _body) => ({
+      status: 200,
+      body: {
+        model: "test-model",
+        choices: [{ message: { content: "<think>plan</think>final answer" } }],
+        usage: { prompt_tokens: 3, completion_tokens: 5, total_tokens: 8 },
+      },
+    }));
+    await upstream.listen();
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "tokenparty-bridge-"));
+    _setConfigForTest(makeBridgedConfig(upstream.url("/v1"), dataDir));
+    initDb();
+    app = createServer();
+    try {
+      const res = await app.request("/v1/responses", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer tp-test" },
+        body: JSON.stringify({ model: "test-model", input: "hi", stream: false }),
+      });
+      assert.equal(res.status, 200);
+      const body = await res.json();
+      assert.equal(body.output.length, 2);
+      assert.equal(body.output[0].type, "reasoning");
+      assert.equal(body.output[0].summary[0].text, "plan");
+      assert.equal(body.output[0].content[0].text, "plan");
+      assert.equal(body.output[1].type, "message");
+      assert.equal(body.output[1].content[0].text, "final answer");
+      assert.equal(body.output_text, "final answer");
+    } finally {
+      fs.rmSync(dataDir, { recursive: true, force: true });
+      await upstream.close();
+    }
+  });
+
+  it("streaming: upstream <think> chunks surface as reasoning_summary deltas, not visible text", async () => {
+    const sseChunks = [
+      `data: ${JSON.stringify({ choices: [{ delta: { role: "assistant", content: "<think>" } }] })}\n\n`,
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "I think" } }] })}\n\n`,
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "</think>" } }] })}\n\n`,
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "Hello!" } }] })}\n\n`,
+      `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 4, completion_tokens: 3, total_tokens: 7 } })}\n\n`,
+      `data: [DONE]\n\n`,
+    ];
+    const upstream = new StreamingMockUpstream(sseChunks);
+    await upstream.listen();
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "tokenparty-bridge-"));
+    _setConfigForTest(makeBridgedConfig(upstream.url("/v1"), dataDir));
+    initDb();
+    app = createServer();
+    try {
+      const res = await app.request("/v1/responses", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer tp-test" },
+        body: JSON.stringify({ model: "test-model", input: "hi", stream: true }),
+      });
+      assert.equal(res.status, 200);
+      const text = await res.text();
+      const events = parseSse(text);
+      const byType: Record<string, any[]> = {};
+      for (const e of events) (byType[e.event] ??= []).push(e.data);
+
+      // No "<think>" leaks into visible text.
+      const visible = (byType["response.output_text.delta"] ?? []).map((d) => d.delta).join("");
+      assert.equal(visible, "Hello!");
+
+      // Reasoning deltas carry the thinking content.
+      const reasoning = (byType["response.reasoning_summary_text.delta"] ?? []).map((d) => d.delta).join("");
+      assert.equal(reasoning, "I think");
+
+      // Final response splits cleanly into reasoning + message items.
+      const completed = byType["response.completed"][0];
+      assert.equal(completed.response.output.length, 2);
+      assert.equal(completed.response.output[0].type, "reasoning");
+      assert.equal(completed.response.output[0].summary[0].text, "I think");
+      assert.equal(completed.response.output[1].type, "message");
+      assert.equal(completed.response.output[1].content[0].text, "Hello!");
+      assert.equal(completed.response.output_text, "Hello!");
     } finally {
       fs.rmSync(dataDir, { recursive: true, force: true });
       await upstream.close();
