@@ -290,6 +290,10 @@ export class ChatToResponsesSseTransform extends Transform {
         output: [],
       },
     });
+    this.writeEvent("response.in_progress", {
+      type: "response.in_progress",
+      response: { id: this.respId, status: "in_progress" },
+    });
   }
 
   // Open the assistant message item + output_text part lazily, on first
@@ -634,6 +638,13 @@ export class ChatToResponsesSseTransform extends Transform {
     if (choice) {
       if (!this.started) this.start();
       const delta = choice.delta ?? {};
+      // Reasoning content delivered as a dedicated field (DeepSeek / Qwen /
+      // some otherai-style upstreams). Routed into the reasoning item
+      // independently of the <think>...</think> text splitter below.
+      if (typeof delta.reasoning_content === "string" && delta.reasoning_content.length > 0) {
+        if (!this.reasoningOpened) this.openReasoningItem();
+        this.emitReasoningDelta(delta.reasoning_content);
+      }
       // Text content. Routed through the <think>/</think> splitter so
       // chain-of-thought chunks become a `reasoning` item.
       if (typeof delta.content === "string" && delta.content.length > 0) {

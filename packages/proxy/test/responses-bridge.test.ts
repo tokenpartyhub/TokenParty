@@ -467,6 +467,61 @@ describe("ChatToResponsesSseTransform", () => {
     const messageDeltas = events.filter((e) => e.event === "response.output_text.delta").map((e) => e.data.delta).join("");
     assert.equal(messageDeltas, "think about it");
   });
+
+  it("emits response.in_progress right after response.created", async () => {
+    const input = [
+      `data: ${JSON.stringify({ choices: [{ delta: { role: "assistant", content: "x" } }] })}\n\n`,
+      `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`,
+      `data: [DONE]\n\n`,
+    ].join("");
+    const transform = new ChatToResponsesSseTransform("m");
+    const output = await Readable.from(input).pipe(transform).toArray();
+    const text = Buffer.concat(output.map((b: any) => Buffer.from(b))).toString("utf-8");
+    const events = parseSse(text);
+    const types = events.map((e) => e.event);
+    const createdIdx = types.indexOf("response.created");
+    const inProgressIdx = types.indexOf("response.in_progress");
+    assert.ok(createdIdx >= 0);
+    assert.ok(inProgressIdx === createdIdx + 1, `response.in_progress should follow response.created, got order: ${types.join(",")}`);
+    assert.equal(events[inProgressIdx].data.response.id, events[createdIdx].data.response.id);
+    assert.equal(events[inProgressIdx].data.response.status, "in_progress");
+  });
+
+  it("routes delta.reasoning_content into the reasoning item (DeepSeek/Qwen style)", async () => {
+    // Upstream that exposes reasoning in a dedicated field rather than
+    // wrapping it in <think>...</think> inside content.
+    const input = [
+      `data: ${JSON.stringify({ choices: [{ delta: { role: "assistant", reasoning_content: "step1 " } }] })}\n\n`,
+      `data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: "step2" } }] })}\n\n`,
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "answer" } }] })}\n\n`,
+      `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 3, completion_tokens: 5, total_tokens: 8 } })}\n\n`,
+      `data: [DONE]\n\n`,
+    ].join("");
+    const transform = new ChatToResponsesSseTransform("m");
+    const output = await Readable.from(input).pipe(transform).toArray();
+    const text = Buffer.concat(output.map((b: any) => Buffer.from(b))).toString("utf-8");
+    const events = parseSse(text);
+    const byType: Record<string, any[]> = {};
+    for (const e of events) (byType[e.event] ??= []).push(e.data);
+
+    // Reasoning item is opened on the first reasoning_content delta and
+    // accumulates both step1 and step2.
+    const reasoningDeltas = (byType["response.reasoning_summary_text.delta"] ?? []).map((d) => d.delta).join("");
+    assert.equal(reasoningDeltas, "step1 step2");
+
+    // Visible text only contains the answer, not the reasoning.
+    const messageDeltas = (byType["response.output_text.delta"] ?? []).map((d) => d.delta).join("");
+    assert.equal(messageDeltas, "answer");
+
+    // Final response has both items, reasoning before message.
+    const completed = byType["response.completed"][0];
+    assert.equal(completed.response.output.length, 2);
+    assert.equal(completed.response.output[0].type, "reasoning");
+    assert.equal(completed.response.output[0].summary[0].text, "step1 step2");
+    assert.equal(completed.response.output[1].type, "message");
+    assert.equal(completed.response.output[1].content[0].text, "answer");
+    assert.equal(completed.response.output_text, "answer");
+  });
 });
 
 // --- integration via the real server ---
