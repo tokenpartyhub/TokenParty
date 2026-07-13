@@ -53,16 +53,24 @@ export function responsesRequestToChat(body: any): any {
 
   // Responses tools: [{type:"function", name, description, parameters, strict}]
   // -> Chat tools: [{type:"function", function:{name, description, parameters, strict}}]
+  // Codex also ships Responses-only tool types (namespace, web_search,
+  // local_shell, mcp, etc.) that have no Chat Completions equivalent.
+  // Mapping them to type:"function" with no name/parameters produces an
+  // invalid tool that upstream providers reject with 400. Filter to
+  // function-shaped entries only; non-function tools are dropped silently
+  // (Codex keeps the request alive even without web_search/namespace).
   if (Array.isArray(body.tools)) {
-    out.tools = body.tools.map((t: any) => ({
-      type: "function",
-      function: {
-        name: t.name,
-        ...(t.description !== undefined ? { description: t.description } : {}),
-        ...(t.parameters !== undefined ? { parameters: t.parameters } : {}),
-        ...(t.strict !== undefined ? { strict: t.strict } : {}),
-      },
-    }));
+    out.tools = body.tools
+      .filter((t: any) => t && (t.type === undefined || t.type === "function"))
+      .map((t: any) => ({
+        type: "function",
+        function: {
+          name: t.name,
+          ...(t.description !== undefined ? { description: t.description } : {}),
+          ...(t.parameters !== undefined ? { parameters: t.parameters } : {}),
+          ...(t.strict !== undefined ? { strict: t.strict } : {}),
+        },
+      }));
   }
 
   const messages: any[] = [];

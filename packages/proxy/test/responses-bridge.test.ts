@@ -73,6 +73,23 @@ describe("responsesRequestToChat (text-only)", () => {
     assert.equal(out.store, undefined);
   });
 
+  it("drops Responses-only tool types (namespace / web_search / etc.)", () => {
+    // Codex sends these alongside function tools. Chat Completions has no
+    // equivalent and upstream providers reject them with 400 if we naively
+    // convert. Filtering here keeps the valid function tools and silently
+    // drops the rest so Codex's request still goes through.
+    const out = responsesRequestToChat({
+      model: "m", input: "x",
+      tools: [
+        { type: "function", name: "exec", parameters: {} },
+        { type: "web_search", external_web_access: false },
+        { type: "namespace", name: "multi_agent_v1", tools: [] },
+        { type: "local_shell" },
+      ],
+    });
+    assert.deepEqual(out.tools, [{ type: "function", function: { name: "exec", parameters: {} } }]);
+  });
+
   it("converts function_call / function_call_output input items to assistant tool_calls + tool messages", () => {
     const out = responsesRequestToChat({
       model: "m",
