@@ -337,7 +337,7 @@ describe("integration: /anthropic/v1/messages", () => {
 });
 
 describe("integration: models list endpoints", () => {
-  it("GET /v1/models returns OpenAI shape", async () => {
+  it("GET /v1/models returns OpenAI shape (and Codex `models` field)", async () => {
     const upstream = new MockUpstream([]);
     await upstream.listen();
     const ctx = await setupApp({ primaryUrl: upstream.url("/v1") });
@@ -347,6 +347,10 @@ describe("integration: models list endpoints", () => {
       const body = await res.json();
       assert.equal(body.object, "list");
       assert.ok(Array.isArray(body.data) && body.data.length > 0);
+      // Codex 0.144+'s ModelsManager deserializes a struct with a
+      // required `models` field — without it the manager logs
+      // "missing field `models`" and re-polls every 3 minutes.
+      assert.deepEqual(body.models, body.data);
     } finally {
       ctx.cleanup();
       await upstream.close();

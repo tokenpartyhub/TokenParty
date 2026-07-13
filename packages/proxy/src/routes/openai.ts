@@ -56,9 +56,17 @@ function toOpenAIModelShape({ id, priority }: AvailableModelEntry) {
 openaiRoutes.get("/models", (c) => {
   const token = c.get("authToken");
   const entries = listAvailableModelsDetailed(token, "openai");
+  const models = entries.map(toOpenAIModelShape);
+  // Codex 0.144+'s ModelsManager deserializes a struct with a required
+  // `models` field, not the OpenAI-standard `data`. Return both so
+  // OpenAI SDKs and Codex both decode the response — without the
+  // `models` key, Codex's manager logs
+  // "failed to decode models response: missing field `models`" and
+  // re-polls /v1/models every ~3 minutes indefinitely.
   return c.json({
     object: "list",
-    data: entries.map(toOpenAIModelShape),
+    data: models,
+    models,
   });
 });
 
