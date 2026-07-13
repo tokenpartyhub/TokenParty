@@ -35,8 +35,13 @@ function toOpenAIModelShape({ id, priority }: AvailableModelEntry) {
     object: "model",
     created: 1704067200,
     owned_by: "tokenparty",
-    // Codex 0.144+ extensions. `supported_in_api: true` and
-    // `visibility: "list"` together stop the background polling loop.
+    // Codex 0.144+ ModelInfo (38-field struct, defined in
+    // codex-rs/protocol/src/openai_models.rs). The struct is strict:
+    // missing or wrong-typed fields trigger
+    //   "failed to decode models response: missing field `X`" / "invalid type: ..."
+    // and force a re-poll of /v1/models every ~3 minutes. Enum values
+    // are serialised in snake_case by serde; see the same file for the
+    // full list of variants.
     slug: id,
     display_name: id,
     description: "",
@@ -45,11 +50,44 @@ function toOpenAIModelShape({ id, priority }: AvailableModelEntry) {
     shell_type: "shell_command",
     visibility: "list",
     supported_in_api: true,
-    priority,
+    // priority must be a finite i32; Infinity JSON-encodes to null.
+    priority: Number.isFinite(priority) ? priority : 9999,
     additional_speed_tiers: [],
     service_tiers: [],
+    default_service_tier: "auto",
     availability_nux: null,
     upgrade: null,
+    base_instructions: "",
+    // model_messages: nested ModelInstructionsVariables (3 optional
+    // strings) and ApprovalMessages (2 optional strings) — both must
+    // be objects, not arrays, and both default to "absent" via Option.
+    model_messages: {
+      instructions_template: "",
+      instructions_variables: { personality_default: null, personality_friendly: null, personality_pragmatic: null },
+      approvals: { on_request: null, on_request_auto_review: null },
+    },
+    include_skills_usage_instructions: false,
+    supports_reasoning_summaries: false,
+    default_reasoning_summary: "auto",
+    support_verbosity: false,
+    default_verbosity: "medium",
+    apply_patch_tool_type: "freeform",
+    web_search_tool_type: "text",
+    truncation_policy: { mode: "tokens", limit: 0 },
+    supports_parallel_tool_calls: false,
+    supports_image_detail_original: false,
+    context_window: 128000,
+    max_context_window: 128000,
+    auto_compact_token_limit: 100000,
+    comp_hash: "",
+    effective_context_window_percent: 100,
+    experimental_supported_tools: [],
+    input_modalities: ["text"],
+    supports_search_tool: false,
+    use_responses_lite: false,
+    auto_review_model_override: "",
+    tool_mode: "direct",
+    multi_agent_version: "v1",
   };
 }
 
