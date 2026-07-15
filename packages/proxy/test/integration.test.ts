@@ -242,7 +242,12 @@ describe("integration: /v1/chat/completions", () => {
     }
   });
 
-  it("returns 502 when all candidates fail", async () => {
+  it("returns the last upstream error verbatim when all candidates fail", async () => {
+    // primary returns 500 with a real error body; backup is an unreachable
+    // port so it fails at the network layer (502 synthetic). lastFail is
+    // the backup attempt, so the client sees 502 with { error: <fetch msg> }.
+    // If the last candidate actually returned an upstream status (500 /
+    // 429 / 403), the client would see that status + body verbatim.
     const primary = new MockUpstream([{ status: 500, body: { error: "internal" } }]);
     await primary.listen();
     const badPort = await unusedPort();
@@ -256,10 +261,40 @@ describe("integration: /v1/chat/completions", () => {
         headers: { "Content-Type": "application/json", Authorization: "Bearer tp-test" },
         body: JSON.stringify({ model: "test-model", messages: [{ role: "user", content: "hi" }] }),
       });
-      assert.equal(res.status, 502);
+      // Last attempt was the unreachable backup → network-layer fail → 504
+      // with a synthetic { error } body (per the "all candidates failed"
+      // design — 504 distinguishes no-upstream-body failures from real
+      // upstream statuses).
+      assert.equal(res.status, 504);
+      const body = await res.json();
+      assert.ok(body.error, "expected synthetic error body");
     } finally {
       ctx.cleanup();
       await primary.close();
+    }
+  });
+
+  it("echoes upstream status+body verbatim when it is the last candidate", async () => {
+    // Single candidate returns 500 — gateway must NOT rewrite it to 502.
+    // The client (codex, SDKs) needs the provider's real error message
+    // (quota exceeded, auth failure, malformed request, ...) to decide
+    // what to do next.
+    const upstream = new MockUpstream([{ status: 500, body: { error: { message: "quota exceeded", code: "server_error" } } }]);
+    await upstream.listen();
+    const ctx = await setupApp({ primaryUrl: upstream.url("/v1") });
+    try {
+      const res = await ctx.app.request("/v1/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer tp-test" },
+        body: JSON.stringify({ model: "test-model", messages: [{ role: "user", content: "hi" }] }),
+      });
+      assert.equal(res.status, 500);
+      const body = await res.json();
+      assert.equal(body.error.code, "server_error");
+      assert.equal(body.error.message, "quota exceeded");
+    } finally {
+      ctx.cleanup();
+      await upstream.close();
     }
   });
 });
@@ -533,7 +568,7 @@ describe("integration: upstream timeout + client disconnect", () => {
     await slow?.close();
   });
 
-  it("aborts the upstream request after upstreamTimeoutMs and returns 502", async () => {
+  it("aborts the upstream request after upstreamTimeoutMs and returns 504", async () => {
     slow = new SlowUpstream();
     await slow.listen();
     const ctx = await setupApp({
@@ -551,10 +586,10 @@ describe("integration: upstream timeout + client disconnect", () => {
     });
     const elapsed = Date.now() - start;
 
-    assert.equal(res.status, 502);
+    assert.equal(res.status, 504);
     assert.ok(elapsed < 5_000, `expected to fail under 5s, took ${elapsed}ms`);
     const body = await res.json();
-    assert.match(body.error, /All provider candidates failed/);
+    assert.equal(body.error, "upstream_timeout");
   });
 
   it("aborts the upstream when the client disconnects mid-stream", async () => {

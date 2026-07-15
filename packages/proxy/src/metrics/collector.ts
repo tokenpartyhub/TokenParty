@@ -18,7 +18,7 @@ export interface RequestRecord {
   currency?: string;
   agent?: string;
   customTags?: string;
-  routeTrace?: { provider: string; status: number | null; latencyMs: number; reason?: string }[];
+  routeTrace?: { provider: string; status: number | null; latencyMs: number; reason?: string; errorBody?: unknown }[];
   // Explicit request start time (when the inbound HTTP request entered
   // forwardRequest). Stored as request_index.timestamp so the requests
   // list reflects the order requests ARRIVED at the gateway, not the

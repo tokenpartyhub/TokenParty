@@ -10,7 +10,7 @@ import { extractTags } from "../tags/registry.js";
 import { createGunzip, createInflate, createBrotliDecompress, createZstdDecompress } from "node:zlib";
 import { Readable, Transform } from "node:stream";
 import { Agent as HttpsAgent, request as httpsRequest } from "node:https";
-import { Agent as HttpAgent, request as httpRequest } from "node:http";
+import { Agent as HttpAgent, request as httpRequest, type IncomingMessage } from "node:http";
 import {
   needsResponsesBridge,
   responsesRequestToChat,
@@ -24,15 +24,28 @@ import {
 const httpAgent = new HttpAgent({ keepAlive: true, maxFreeSockets: 20, keepAliveMsecs: 30_000 });
 const httpsAgent = new HttpsAgent({ keepAlive: true, maxFreeSockets: 20, keepAliveMsecs: 30_000 });
 
-export type RouteTraceEntry = { provider: string; status: number | null; latencyMs: number; reason?: string };
+export type RouteTraceEntry = {
+  provider: string;
+  status: number | null;
+  latencyMs: number;
+  reason?: string;
+  // Raw upstream error body when this attempt failed (non-2xx response).
+  // Lets the dashboard surface the provider's real error message, and
+  // lets the final-fail response echo it verbatim to the client.
+  errorBody?: unknown;
+};
 
+// Outcome of one upstream attempt. Two states:
+//   success — we have a Response ready to hand to the client.
+//   fail    — the attempt did not produce a usable response; carry the
+//             upstream status + raw body so the forwarder can either
+//             continue to the next candidate or, if this was the last,
+//             echo it back to the client verbatim.
+// Thrown network errors / timeouts / client aborts are also `fail`
+// with status=502 and a synthetic error body.
 type AttemptResult =
-  | { kind: "done"; response: Response; ttftMs: number }
-  | { kind: "retryable"; status: number; error?: string; ttftMs: number };
-
-function isRetryableStatus(status: number): boolean {
-  return status === 429 || status >= 500;
-}
+  | { kind: "success"; response: Response; ttftMs: number }
+  | { kind: "fail"; status: number; body: unknown; ttftMs: number };
 
 const roundRobinCounters = new Map<string, number>();
 
@@ -145,6 +158,12 @@ export async function forwardRequest(
   }
 
   async function runForwardLoop() {
+  // Last non-successful attempt — if every candidate fails, we echo
+  // this upstream status + body verbatim to the client, so codex / SDKs
+  // see the provider's real error (quota exceeded, auth failure,
+  // malformed request, etc.) instead of a generic gateway 502.
+  let lastFail: { status: number; body: unknown } | null = null;
+
   for (let i = 0; i < candidateProviders.length; i++) {
     const provider = candidateProviders[i];
     const providerPricing = getModelPricing(provider.models.find((m) => getModelId(m) === model)!);
@@ -197,16 +216,39 @@ export async function forwardRequest(
       upstreamSignal: upstreamController.signal,
     });
 
-    if (attemptResult.kind === "done") {
+    if (attemptResult.kind === "success") {
       return attemptResult.response;
     }
 
     const latencyMs = Date.now() - startTime;
-    const reason = attemptResult.status === 429 ? "rate_limited"
-      : attemptResult.error ? "network_error"
+    // reason is for the human-readable route_trace label. body holds
+    // the actual upstream payload (or a synthetic { error } for network
+    // failures) — both are preserved for the dashboard and for the
+    // final-fail echo.
+    const reason = attemptResult.body && typeof attemptResult.body === "object"
+      && (attemptResult.body as any).error === "client_disconnect" ? "client_disconnect"
+      : attemptResult.body && typeof attemptResult.body === "object"
+      && (attemptResult.body as any).error === "upstream_timeout" ? "upstream_timeout"
+      : typeof attemptResult.body === "string" && attemptResult.body.includes("ECONN") ? "network_error"
+      : typeof attemptResult.body === "string" ? "network_error"
       : `http_${attemptResult.status}`;
 
-    routeTrace.push({ provider: provider.id, status: attemptResult.status, latencyMs, reason });
+    lastFail = { status: attemptResult.status, body: attemptResult.body };
+    routeTrace.push({
+      provider: provider.id,
+      status: attemptResult.status,
+      latencyMs,
+      reason,
+      errorBody: attemptResult.body,
+    });
+    // Record every attempt in request_index so the dashboard's requests
+    // list reflects each provider's status; the final-fail overwrite
+    // below ensures the terminal row matches what the client received.
+    const recordError = typeof attemptResult.body === "string"
+      ? attemptResult.body
+      : (attemptResult.body && typeof attemptResult.body === "object" && (attemptResult.body as any)?.error)
+        ? String((attemptResult.body as any).error)
+        : undefined;
     recordRequest({
       id: requestId,
       tokenId: token.key,
@@ -220,7 +262,7 @@ export async function forwardRequest(
       ttftMs: attemptResult.ttftMs,
       status: attemptResult.status,
       logFile,
-      error: attemptResult.error,
+      error: recordError,
       apiKeyIndex,
       pricing: providerPricing,
       currency: provider.currency,
@@ -230,18 +272,28 @@ export async function forwardRequest(
       startTime,
     });
 
+    // Client disconnected — there's nobody to receive a fallback
+    // response. Stop here instead of burning upstream quota.
+    if (reason === "client_disconnect") break;
+
     if (i < candidateProviders.length - 1) {
       console.log(`[tokenparty] Falling back from ${provider.id} to ${candidateProviders[i + 1].id} for model ${model} (${reason})`);
     }
   }
 
+  // Every candidate failed (or client aborted). Echo the last upstream
+  // error verbatim so the client sees the real cause; use 504 only when
+  // the failure was at the network layer with no upstream body to show.
+  const finalStatus = lastFail && lastFail.status !== 502 ? lastFail.status : 504;
+  const finalBody: unknown = lastFail?.body ?? { error: "All provider candidates failed" };
+
   writeLog(requestId, {
     type: "response",
     timestamp: Date.now(),
-    status: 502,
-    error: "All provider candidates failed",
+    status: finalStatus,
+    body: finalBody,
   });
-  return c.json({ error: "All provider candidates failed" }, 502);
+  return c.json(finalBody, finalStatus as any);
   }
 }
 
@@ -283,10 +335,11 @@ interface AttemptParams {
 //   - Streaming: same-protocol pass-through via http.request + Transform,
 //     streamSSE-agnostic; the bytes are forwarded verbatim.
 //   - Non-streaming: a single fetch + decompressed JSON, returned.
-// The retryable-vs-final decision is the same in both paths: 429/5xx
-// (or a thrown network error) means "skip to next candidate". 4xx that
-// isn't 429 is final (treating it as retryable would let a bad key /
-// bad request cycle through every provider).
+// Anything that isn't a clean 2xx is returned as `kind: "fail"` carrying
+// the upstream status + raw body. The forwarder loop decides whether to
+// try the next candidate or echo this failure verbatim to the client.
+// Network-level errors (fetch threw / socket died / client aborted) are
+// also `fail` with a synthetic 502 + { error } body.
 async function attemptProvider(params: AttemptParams): Promise<AttemptResult> {
   const {
     c, provider, targetUrl, upstreamHeaders, attemptBody, isStreaming, isResponsesApi,
@@ -306,9 +359,9 @@ async function attemptProvider(params: AttemptParams): Promise<AttemptResult> {
         // understands (response.output_text.delta / response.completed).
         streamTransform: bridge ? new ChatToResponsesSseTransform(model) : undefined,
       });
-      if (result.kind === "retryable") return result;
+      if (result.kind === "fail") return result;
       routeTrace.push({ provider: provider.id, status: 200, latencyMs: 0 });
-      return { kind: "done", response: result.response, ttftMs: result.ttftMs };
+      return { kind: "success", response: result.response, ttftMs: result.ttftMs };
     }
 
     const response = await fetch(targetUrl, {
@@ -318,8 +371,20 @@ async function attemptProvider(params: AttemptParams): Promise<AttemptResult> {
       signal: params.upstreamSignal,
     });
 
-    if (isRetryableStatus(response.status)) {
+    // Any non-2xx: read the upstream's raw error body and return it as
+    // a `fail`. The forwarder loop either retries the next candidate
+    // or, if this was the last, echoes this body verbatim to the client
+    // — so providers' real error messages (quota exceeded, auth
+    // failure, malformed request) reach the user instead of being
+    // swallowed into a generic gateway 502.
+    if (response.status < 200 || response.status >= 300) {
       const errorText = await response.text().catch(() => "");
+      // .text() fully drains the body, so there's nothing left to cancel.
+      // Explicitly calling .cancel() here would throw "ReadableStream is
+      // locked" on Node's undici and let the outer catch swallow the
+      // upstream's real error into a synthetic network_error.
+      let errorBody: unknown = errorText;
+      try { errorBody = JSON.parse(errorText); } catch {}
       writeLog(requestId, {
         type: "attempt_response",
         timestamp: Date.now(),
@@ -328,8 +393,7 @@ async function attemptProvider(params: AttemptParams): Promise<AttemptResult> {
         status: response.status,
         body: errorText.slice(0, 8000),
       });
-      await response.body?.cancel();
-      return { kind: "retryable", status: response.status, ttftMs: Date.now() - startTime };
+      return { kind: "fail", status: response.status, body: errorBody, ttftMs: Date.now() - startTime };
     }
 
     const respHeaders: Record<string, string> = {};
@@ -376,17 +440,26 @@ async function attemptProvider(params: AttemptParams): Promise<AttemptResult> {
       startTime,
     });
 
-    return { kind: "done", response: c.json(body, response.status as any), ttftMs: latencyMs };
+    return { kind: "success", response: c.json(body, response.status as any), ttftMs: latencyMs };
   } catch (error: any) {
     const latencyMs = Date.now() - startTime;
+    // AbortError: the signal's `reason` carries the real cause
+    // (upstream_timeout / client_disconnect). Without this, Node's
+    // undici surfaces a generic "The operation was aborted" and the
+    // main loop would mis-classify the fail as network_error.
+    const isAbort = error?.name === "AbortError" || params.upstreamSignal.aborted;
+    const abortReason = isAbort ? String(params.upstreamSignal.reason ?? "aborted") : undefined;
+    const failBody = abortReason
+      ? { error: abortReason }
+      : { error: error?.message ?? "network_error" };
     writeLog(requestId, {
       type: "attempt_response",
       timestamp: Date.now(),
       attemptIndex,
       attemptProvider: provider.id,
-      error: error.message,
+      error: error?.message,
     });
-    return { kind: "retryable", status: 502, error: error.message, ttftMs: latencyMs };
+    return { kind: "fail", status: 502, body: failBody, ttftMs: latencyMs };
   }
 }
 
@@ -438,7 +511,7 @@ function rawStreamPassthrough(params: RawStreamPassthroughParams): Promise<Attem
       method: "POST",
       headers: reqHeaders,
       agent: keepAliveAgent,
-    }, (res) => {
+    }, async (res) => {
       if (upstreamSignal.aborted) {
         // Client already disconnected or upstream timeout fired before
         // the response arrived. Tear down immediately.
@@ -451,7 +524,7 @@ function rawStreamPassthrough(params: RawStreamPassthroughParams): Promise<Attem
           attemptProvider: provider.id,
           error: reason,
         });
-        resolve({ kind: "retryable", status: 502, error: reason, ttftMs: Date.now() - startTime });
+        resolve({ kind: "fail", status: 502, body: { error: reason }, ttftMs: Date.now() - startTime });
         return;
       }
       const respHeaders: Record<string, string> = {};
@@ -460,16 +533,21 @@ function rawStreamPassthrough(params: RawStreamPassthroughParams): Promise<Attem
       }
       const status = res.statusCode ?? 502;
 
-      if (isRetryableStatus(status)) {
-        res.destroy();
+      // Any non-2xx: drain the upstream error body so it can be echoed
+      // verbatim to the client (or carried forward to the next attempt).
+      // Without this the streaming path would lose the provider's real
+      // error message and degrade to a generic gateway 502.
+      if (status < 200 || status >= 300) {
+        const errorBody = await readErrorBody(res);
         writeLog(requestId, {
           type: "attempt_response",
           timestamp: Date.now(),
           attemptIndex,
           attemptProvider: provider.id,
           status,
+          body: typeof errorBody === "string" ? errorBody.slice(0, 8000) : errorBody,
         });
-        resolve({ kind: "retryable", status, ttftMs: Date.now() - startTime });
+        resolve({ kind: "fail", status, body: errorBody, ttftMs: Date.now() - startTime });
         return;
       }
 
@@ -518,18 +596,23 @@ function rawStreamPassthrough(params: RawStreamPassthroughParams): Promise<Attem
       const sourceStream = streamTransform ? res.pipe(streamTransform) : res;
       const stream = Readable.toWeb(sourceStream.pipe(passthrough) as unknown as Readable) as ReadableStream<Uint8Array>;
       const ttftMs = (firstChunkAt ?? Date.now()) - startTime;
-      resolve({ kind: "done", response: new Response(stream, { status, headers: passthroughHeaders }), ttftMs });
+      resolve({ kind: "success", response: new Response(stream, { status, headers: passthroughHeaders }), ttftMs });
     });
 
     req.on("error", (error) => {
+      const isAbort = upstreamSignal.aborted;
+      const abortReason = isAbort ? String(upstreamSignal.reason ?? "aborted") : undefined;
+      const failBody = abortReason
+        ? { error: abortReason }
+        : { error: error?.message ?? "network_error" };
       writeLog(requestId, {
         type: "attempt_response",
         timestamp: Date.now(),
         attemptIndex,
         attemptProvider: provider.id,
-        error: error.message,
+        error: error?.message,
       });
-      resolve({ kind: "retryable", status: 502, error: error.message, ttftMs: Date.now() - startTime });
+      resolve({ kind: "fail", status: 502, body: failBody, ttftMs: Date.now() - startTime });
     });
     // Cancel the in-flight http.request when the upstream signal fires
     // (timeout or client disconnect). req.destroy forces the socket
@@ -746,6 +829,26 @@ async function decompressJson(response: Response): Promise<any> {
     text += decoder.decode(value, { stream: true });
   }
   return JSON.parse(text);
+}
+
+// Drain a Node IncomingMessage (used for streaming upstream error
+// responses) into a string, applying the same decompression we use for
+// fetch responses. Tries to parse as JSON; falls back to the raw text.
+async function readErrorBody(res: IncomingMessage): Promise<unknown> {
+  const encoding = (res.headers["content-encoding"] as string | undefined) ?? "";
+  const decoders: Record<string, () => NodeJS.ReadWriteStream> = {
+    gzip: createGunzip,
+    deflate: createInflate,
+    br: createBrotliDecompress,
+    zstd: createZstdDecompress,
+  };
+  const source: NodeJS.ReadableStream = decoders[encoding] ? res.pipe(decoders[encoding]()) : res;
+  const chunks: Buffer[] = [];
+  try {
+    for await (const chunk of source) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  } catch {}
+  const text = Buffer.concat(chunks).toString("utf-8");
+  try { return JSON.parse(text); } catch { return text; }
 }
 
 function decompressResponse(response: Response): ReadableStream<Uint8Array> {
