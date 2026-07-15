@@ -4,6 +4,25 @@ All notable changes to TokenParty are documented here.
 
 ## [Unreleased]
 
+## [0.0.33] - 2026-07-15
+
+### Fixed
+- Dashboard request detail now normalises the request body across all
+  three entry protocols (Chat Completions / Anthropic Messages / Codex
+  Responses). Previously the **Messages** tab read `body.messages`
+  only, so Codex requests (which use `body.input` + `body.instructions`)
+  showed `Messages (0)` and an empty panel. The tab now reads the
+  unified `getReqMessages()` output; the **System** tab also activates
+  for `body.instructions` so the operator can see the Codex system
+  prompt.
+- Agent-adapter views (`ToolSummary`, `ConversationFlow`, diagnostics,
+  and the shared "Tool Summary" / "Flow" section detection) go through
+  the same normaliser, so those panels no longer render empty for
+  Codex requests.
+- `MessageItem` role colors include a `reasoning` variant so prior
+  reasoning traces (when present in `input`) get their own slate
+  chip instead of falling back to the generic gray.
+
 ## [0.0.32] - 2026-07-15
 
 ### Changed
