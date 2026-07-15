@@ -357,6 +357,123 @@ describe("integration: models list endpoints", () => {
     }
   });
 
+  it("GET /v1/models: each ModelInfo matches codex-rs struct fields", async () => {
+    // Codex 0.144+'s ModelsManager deserializes each entry into a
+    // ModelInfo struct (38 fields, codex-rs/protocol/src/openai_models.rs).
+    // Wrong-typed / missing / mis-named fields log
+    //   "failed to decode models response: missing field `X`" /
+    //   "invalid type: ..." /
+    //   "unknown variant `Y`, expected ..."
+    // and codex re-polls /v1/models. This test enumerates every field
+    // Codex expects so future regressions surface immediately.
+    const upstream = new MockUpstream([]);
+    await upstream.listen();
+    const ctx = await setupApp({ primaryUrl: upstream.url("/v1") });
+    try {
+      const res = await ctx.app.request("/v1/models", { headers: { Authorization: "Bearer tp-test" } });
+      const body = await res.json();
+      assert.ok(body.models.length > 0, "expected at least one model");
+      for (const m of body.models) {
+        // Required (no #[serde(default)]) string fields
+        assert.equal(typeof m.slug, "string");
+        assert.equal(typeof m.display_name, "string");
+        assert.equal(typeof m.base_instructions, "string");
+        // Option<String> — null or string
+        assert.ok(m.description === null || typeof m.description === "string");
+        // Option<ReasoningEffort> — null or string
+        assert.ok(m.default_reasoning_level === null || typeof m.default_reasoning_level === "string");
+        // Vec<ReasoningEffortPreset { effort, description }>
+        assert.ok(Array.isArray(m.supported_reasoning_levels));
+        for (const lvl of m.supported_reasoning_levels) {
+          assert.equal(typeof lvl.effort, "string");
+          assert.equal(typeof lvl.description, "string");
+        }
+        // Required enums (snake_case) — assert valid known values
+        assert.ok(["default", "local", "unified_exec", "disabled", "shell_command"].includes(m.shell_type));
+        assert.ok(["list", "hide", "none"].includes(m.visibility));
+        assert.equal(typeof m.supported_in_api, "boolean");
+        // priority: i32 (finite; Infinity JSON-encodes to null which codex rejects)
+        assert.equal(typeof m.priority, "number");
+        assert.ok(Number.isFinite(m.priority));
+        // Vec<String>
+        assert.ok(Array.isArray(m.additional_speed_tiers));
+        // Vec<ModelServiceTier { id, name, description }>
+        assert.ok(Array.isArray(m.service_tiers));
+        // Option<String>
+        assert.ok(m.default_service_tier === null || typeof m.default_service_tier === "string");
+        // Option<ModelAvailabilityNux> — null or { message: string }
+        assert.ok(m.availability_nux === null || typeof m.availability_nux?.message === "string");
+        // Option<ModelInfoUpgrade> — null or { model: string, migration_markdown: string }
+        assert.ok(m.upgrade === null || (typeof m.upgrade?.model === "string" && typeof m.upgrade?.migration_markdown === "string"));
+        // Option<ModelMessages> — null or full nested object
+        if (m.model_messages !== null) {
+          assert.equal(typeof m.model_messages.instructions_template, "string");
+          const v = m.model_messages.instructions_variables;
+          assert.equal(typeof v, "object");
+          for (const k of ["personality_default", "personality_friendly", "personality_pragmatic"]) {
+            assert.ok(v[k] === null || typeof v[k] === "string", `model_messages.instructions_variables.${k}`);
+          }
+          const a = m.model_messages.approvals;
+          assert.equal(typeof a, "object");
+          for (const k of ["on_request", "on_request_auto_review"]) {
+            assert.ok(a[k] === null || typeof a[k] === "string", `model_messages.approvals.${k}`);
+          }
+        }
+        assert.equal(typeof m.include_skills_usage_instructions, "boolean");
+        // CRITICAL — Rust field name matches codex-cli 0.144.1
+        // (`supports_reasoning_summaries`, plural). Later codex versions
+        // renamed to `supports_reasoning_summary_parameter` (singular +
+        // "parameter"); if codex is upgraded, rename this too. With
+        // `default = default_true` a missing or wrong-name field defaults
+        // to true on deserialize, silently changing model capability.
+        assert.equal(typeof m.supports_reasoning_summaries, "boolean");
+        // ReasoningSummary enum (lowercase)
+        assert.ok(["auto", "concise", "detailed", "none"].includes(m.default_reasoning_summary));
+        assert.equal(typeof m.support_verbosity, "boolean");
+        // Option<Verbosity>
+        assert.ok(m.default_verbosity === null || ["low", "medium", "high"].includes(m.default_verbosity));
+        // Option<ApplyPatchToolType>
+        assert.ok(m.apply_patch_tool_type === null || ["freeform"].includes(m.apply_patch_tool_type));
+        // WebSearchToolType (snake_case)
+        assert.ok(["text", "text_and_image"].includes(m.web_search_tool_type));
+        // TruncationPolicyConfig { mode, limit }
+        assert.equal(typeof m.truncation_policy, "object");
+        assert.ok(["bytes", "tokens"].includes(m.truncation_policy.mode));
+        assert.equal(typeof m.truncation_policy.limit, "number");
+        assert.ok(Number.isFinite(m.truncation_policy.limit));
+        assert.equal(typeof m.supports_parallel_tool_calls, "boolean");
+        assert.equal(typeof m.supports_image_detail_original, "boolean");
+        // Option<i64>
+        assert.ok(m.context_window === null || Number.isFinite(m.context_window));
+        assert.ok(m.max_context_window === null || Number.isFinite(m.max_context_window));
+        assert.ok(m.auto_compact_token_limit === null || Number.isFinite(m.auto_compact_token_limit));
+        assert.ok(m.comp_hash === null || typeof m.comp_hash === "string");
+        // i64 (default 100)
+        assert.equal(typeof m.effective_context_window_percent, "number");
+        assert.ok(Number.isFinite(m.effective_context_window_percent));
+        // Vec<String>
+        assert.ok(Array.isArray(m.experimental_supported_tools));
+        // Vec<InputModality> (lowercase)
+        assert.ok(Array.isArray(m.input_modalities));
+        for (const mod of m.input_modalities) {
+          assert.ok(["text", "image"].includes(mod), `unknown input_modality: ${mod}`);
+        }
+        assert.equal(typeof m.supports_search_tool, "boolean");
+        assert.equal(typeof m.use_responses_lite, "boolean");
+        // Option<String>
+        assert.ok(m.auto_review_model_override === null || typeof m.auto_review_model_override === "string");
+        // Option<ToolMode> (snake_case) — uses deserialize_optional_model_selector
+        // which silently accepts unknown strings as None, so just type-check.
+        assert.ok(m.tool_mode === null || typeof m.tool_mode === "string");
+        // Option<MultiAgentVersion> (snake_case) — same lenient deserializer
+        assert.ok(m.multi_agent_version === null || typeof m.multi_agent_version === "string");
+      }
+    } finally {
+      ctx.cleanup();
+      await upstream.close();
+    }
+  });
+
   it("GET /anthropic/v1/models returns Anthropic shape", async () => {
     const upstream = new MockUpstream([]);
     await upstream.listen();

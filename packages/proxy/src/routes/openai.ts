@@ -67,6 +67,15 @@ function toOpenAIModelShape({ id, priority }: AvailableModelEntry) {
       approvals: { on_request: null, on_request_auto_review: null },
     },
     include_skills_usage_instructions: false,
+    // Rust field is `supports_reasoning_summaries` (plural, no
+    // "parameter") in codex 0.144.1 — codex 0.144.1 REJECTS the
+    // response with "missing field `supports_reasoning_summaries`"
+    // if the field name doesn't match exactly. Later codex versions
+    // renamed it to `supports_reasoning_summary_parameter` (singular
+    // + "parameter"); if you upgrade codex, rename this too.
+    // With `default = default_true` a missing/wrong-name field
+    // defaults to true on deserialize, so the field has to be sent
+    // under the EXACT name codex expects.
     supports_reasoning_summaries: false,
     default_reasoning_summary: "auto",
     support_verbosity: false,

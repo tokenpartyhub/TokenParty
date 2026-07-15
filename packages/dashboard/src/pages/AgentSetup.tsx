@@ -435,6 +435,15 @@ function codexConfig(origin: string, modelIds: string[]) {
   //      prompts them on first launch instead of failing to start.
   //   3. The [model_providers.tokenparty] block itself with wire_api,
   //      base_url, etc.
+  //
+  // supports_websockets = false: Codex 0.144+ defaults OpenAI providers
+  // to true, which makes /v1/responses use a WebSocket transport
+  // (codex converts http:// -> ws://). TokenParty is an HTTP-only
+  // reverse proxy — Hono's Node adapter doesn't implement
+  // upgradeWebSocket, so WS attempts fail silently and codex falls
+  // back to HTTP, which is what we want directly. Disabling WS skips
+  // the failed handshake entirely and keeps the Responses->Chat
+  // bridge path on a single transport.
   const providerLine = "model_provider = \"tokenparty\"";
   const modelLine = modelIds.length > 0
     ? "model = \"" + modelIds[0] + "\"\n"
@@ -450,6 +459,7 @@ function codexConfig(origin: string, modelIds: string[]) {
     "env_key = \"TOKENPARTY_API_KEY\"\n" +
     "wire_api = \"responses\"\n" +
     "requires_openai_auth = false\n" +
+    "supports_websockets = false\n" +
     "request_max_retries = 4\n" +
     "stream_max_retries = 10\n" +
     "stream_idle_timeout_ms = 300000\n" +
