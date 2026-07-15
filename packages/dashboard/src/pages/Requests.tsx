@@ -27,10 +27,40 @@ const TIME_FMT = new Intl.DateTimeFormat("en-GB", {
 });
 const fmtTime = (d: Date) => TIME_FMT.format(d);
 
-// Format a time range, dropping year/month/day when start and end share them:
-//   same day         → "16:36:04-16:36:20"
+// True when `d` (a local-time Date) is the same calendar day as the
+// browser's "now". Used to decide whether a timestamp column can drop
+// the date prefix without becoming ambiguous.
+function isToday(d: Date): boolean {
+  const n = new Date();
+  return d.getFullYear() === n.getFullYear()
+    && d.getMonth() === n.getMonth()
+    && d.getDate() === n.getDate();
+}
+
+// Render a single timestamp: date prefix when needed, time always.
+//   today          → "16:36:04"
+//   this year      → "Jul 14, 16:36:04"
+//   other year     → "Dec 31 2025, 16:36:04"
+function stamp(d: Date): string {
+  if (isToday(d)) return fmtTime(d);
+  const sameYear = d.getFullYear() === new Date().getFullYear();
+  if (sameYear) {
+    const MMM = new Intl.DateTimeFormat("en-US", { month: "short" });
+    const dayFmt = new Intl.DateTimeFormat("en-US", { day: "numeric" });
+    return `${MMM.format(d)} ${dayFmt.format(d)}, ${fmtTime(d)}`;
+  }
+  const yearMonthDay = new Intl.DateTimeFormat("en-US", { year: "numeric", month: "short", day: "numeric" });
+  return `${yearMonthDay.format(d)}, ${fmtTime(d)}`;
+}
+
+// Format a time range. When both endpoints are on the same day the time-only
+// form is used (today: "16:36:04-16:36:20"; yesterday: "Jul 14, 16:36:04-16:36:20").
+// For rows older than today the date prefix must stay visible, otherwise the
+// user can't tell which day the row came from. Multi-day ranges always
+// include date on both endpoints:
+//   today            → "16:36:04-16:36:20"
+//   yesterday        → "Jul 14, 16:36:04-16:36:20"
 //   same month/year  → "Jul 8, 16:36:04 - Jul 9, 16:36:20"
-//   same year        → "Jul 8, 16:36:04 - Aug 9, 16:36:20"
 //   cross year       → "Dec 31 2025, 16:36:04 - Jan 1 2026, 16:36:20"
 function formatTimeRange(startMs: number, endMs: number): string {
   if (!startMs) return "—";
@@ -41,18 +71,8 @@ function formatTimeRange(startMs: number, endMs: number): string {
   const sameM = sameY && start.getMonth() === end.getMonth();
   const sameD = sameM && start.getDate() === end.getDate();
 
-  if (sameD) return `${fmtTime(start)}-${fmtTime(end)}`;
-
-  const MMM = new Intl.DateTimeFormat("en-US", { month: "short" });
-  const dayFmt = new Intl.DateTimeFormat("en-US", { day: "numeric" });
-  const yearMonthDay = new Intl.DateTimeFormat("en-US", { year: "numeric", month: "short", day: "numeric" });
-
-  const stampStart = (d: Date) =>
-    sameY ? `${MMM.format(d)} ${dayFmt.format(d)}, ${fmtTime(d)}` : `${yearMonthDay.format(d)}, ${fmtTime(d)}`;
-  const stampEnd = (d: Date) =>
-    sameM ? `${fmtTime(d)}` : stampStart(d);
-
-  return `${stampStart(start)} - ${stampEnd(end)}`;
+  if (sameD) return `${stamp(start)}-${stamp(end)}`;
+  return `${stamp(start)} - ${stamp(end)}`;
 }
 
 interface Filters {
