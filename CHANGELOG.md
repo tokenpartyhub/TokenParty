@@ -4,6 +4,51 @@ All notable changes to TokenParty are documented here.
 
 ## [Unreleased]
 
+## [0.0.32] - 2026-07-15
+
+### Changed
+- Forwarder fallback policy: **all** non-2xx responses now fall through to
+  the next candidate provider, not just 429 / 5xx. Previously a 401 /
+  403 / 400 from one provider would be returned to the client
+  immediately; the gateway now gives the remaining candidates a chance
+  (e.g. the same model served by a different key).
+- When every candidate fails, the gateway **echoes the last upstream's
+  status and body verbatim** instead of rewriting them to a generic
+  `502 {"error":"All provider candidates failed"}`. Clients (codex,
+  SDKs) now see the provider's real error message — quota exhausted,
+  auth failure, malformed request, etc. — so they can decide what to
+  do next without the operator digging through JSONL logs.
+- Network-layer failures (fetch threw / upstream timeout / client
+  disconnect) — i.e. cases with **no upstream body to echo** — are
+  distinguished by returning **504** (instead of 502) with a synthetic
+  `{error: "<reason>"}` body (`upstream_timeout` / `client_disconnect`
+  / the fetch error message).
+
+### Added
+- `RouteTraceEntry.errorBody` field: every failed attempt carries the
+  raw upstream error payload, surfaced in the dashboard's request
+  detail view so the operator can see *why* each provider failed
+  without opening the JSONL log.
+- `readErrorBody()` helper: drains a streaming upstream error response
+  (with gzip / deflate / br / zstd decompression) so the streaming
+  path preserves the provider's error payload just like the
+  non-streaming path.
+- Two new integration tests: *echoes upstream status+body verbatim when
+  it is the last candidate*; *returns the last upstream error
+  verbatim when all candidates fail*.
+
+### Fixed
+- Non-streaming failure path no longer calls `response.body.cancel()`
+  after `.text()` — on Node's undici the cancel throws
+  `ReadableStream is locked`, which the outer catch previously caught
+  and rewrote the upstream's real error into a synthetic
+  `network_error`. Removed the redundant cancel so the provider's
+  message reaches the client.
+- Abort-aware error bodies: fetch / http.request AbortError now reads
+  the real cause from `signal.reason` (`upstream_timeout` /
+  `client_disconnect`) instead of masking it as "The operation was
+  aborted" / "socket hang up".
+
 ## [0.0.25] - 2026-07-09
 
 ### Fixed
