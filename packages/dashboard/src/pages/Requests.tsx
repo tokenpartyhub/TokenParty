@@ -539,8 +539,8 @@ export default function Requests({ mode = "admin" }: { mode?: "admin" | "user" }
                     {reqLog && (
                       <>
                         <TabButton id="headers" label="Headers" active={reqSection} onClick={setReqSection} />
-                        <TabButton id="messages" label={`Messages (${reqLog.body?.messages?.length ?? 0})`} active={reqSection} onClick={setReqSection} />
-                        {reqLog.body?.system && <TabButton id="system" label="System" active={reqSection} onClick={setReqSection} />}
+                        <TabButton id="messages" label={`Messages (${getReqMessages(reqLog.body)?.length ?? 0})`} active={reqSection} onClick={setReqSection} />
+                        {(reqLog.body?.system || reqLog.body?.instructions) && <TabButton id="system" label="System" active={reqSection} onClick={setReqSection} />}
                         {reqLog.body?.tools && <TabButton id="tools" label={`Tools (${reqLog.body.tools.length})`} active={reqSection} onClick={setReqSection} />}
                         {adapter && adapterCtx && adapter.getRequestSections(reqLog, resLog, adapterCtx).map((s) => (
                           <TabButton key={s.id} id={s.id} label={s.label} active={reqSection} onClick={setReqSection} />
@@ -554,16 +554,18 @@ export default function Requests({ mode = "admin" }: { mode?: "admin" | "user" }
                   {reqLog && (
                     <>
                       {reqSection === "headers" && <HeadersTable headers={reqLog.headers} />}
-                      {reqSection === "messages" && <MessageList messages={reqLog.body?.messages} />}
-                      {reqSection === "system" && reqLog.body?.system && (
+                      {reqSection === "messages" && <MessageList messages={getReqMessages(reqLog.body)} />}
+                      {reqSection === "system" && (reqLog.body?.system || reqLog.body?.instructions) && (
                         <div className="bg-amber-50 border border-amber-200 rounded p-3 whitespace-pre-wrap">
-                          {typeof reqLog.body.system === "string"
-                            ? reqLog.body.system
-                            : Array.isArray(reqLog.body.system)
-                              ? reqLog.body.system.map((block: any, i: number) => (
-                                  <div key={i}>{block.text ?? JSON.stringify(block)}</div>
-                                ))
-                              : JSON.stringify(reqLog.body.system)}
+                          {reqLog.body.system
+                            ? (typeof reqLog.body.system === "string"
+                                ? reqLog.body.system
+                                : Array.isArray(reqLog.body.system)
+                                  ? reqLog.body.system.map((block: any, i: number) => (
+                                      <div key={i}>{block.text ?? JSON.stringify(block)}</div>
+                                    ))
+                                  : JSON.stringify(reqLog.body.system))
+                            : reqLog.body.instructions}
                         </div>
                       )}
                       {reqSection === "tools" && reqLog.body?.tools && <ToolList tools={reqLog.body.tools} />}
@@ -968,6 +970,56 @@ function TokenUsageBar({ input, output, cacheRead = 0, cacheWrite = 0 }: { input
 
 // --- Message List (colored by role) ---
 
+// Normalize a request body from any of the supported entry protocols into
+// a Chat-Completions-shaped messages array:
+//   - Chat Completions:   { messages: [...] }
+//   - Anthropic Messages: { system?, messages: [...] }
+//   - Codex Responses:    { instructions?, input: string | Item[] }
+// Without this, the Messages tab on a Codex request shows "No messages"
+// because the body has no `messages` field.
+function getReqMessages(body: any): any[] | undefined {
+  if (!body) return undefined;
+  const out: any[] = [];
+
+  // System prompt: Anthropic's `system` OR Responses API's `instructions`
+  if (body.system) {
+    out.push({ role: "system", content: body.system });
+  } else if (typeof body.instructions === "string" && body.instructions) {
+    out.push({ role: "system", content: body.instructions });
+  }
+
+  if (Array.isArray(body.messages)) {
+    out.push(...body.messages);
+  } else if (typeof body.input === "string") {
+    out.push({ role: "user", content: body.input });
+  } else if (Array.isArray(body.input)) {
+    for (const item of body.input) {
+      if (!item) continue;
+      if (item.type === "message") {
+        // Responses API message item — same shape as Chat Completions
+        out.push({ role: item.role ?? "user", content: item.content });
+      } else if (item.type === "function_call") {
+        out.push({
+          role: "assistant",
+          content: "",
+          tool_calls: [{ id: item.call_id ?? item.id, type: "function", function: { name: item.name, arguments: item.arguments } }],
+        });
+      } else if (item.type === "function_call_output") {
+        out.push({ role: "tool", tool_call_id: item.call_id ?? item.id, content: item.output ?? "" });
+      } else if (item.type === "reasoning") {
+        // Reasoning traces in the input — surface them as a distinct
+        // role so the operator can see what the prior model thought.
+        const summary = item.summary?.map((s: any) => s.text).filter(Boolean).join("\n") ?? "";
+        out.push({ role: "reasoning", content: summary });
+      } else {
+        // Unknown item — dump as user message so it isn't silently lost
+        out.push({ role: "user", content: JSON.stringify(item) });
+      }
+    }
+  }
+  return out.length > 0 ? out : undefined;
+}
+
 function MessageList({ messages }: { messages?: any[] }) {
   if (!messages || messages.length === 0) return <div className="text-gray-400 italic">No messages</div>;
   const reverse = getSettings().reverseMessages;
@@ -1001,6 +1053,7 @@ function MessageItem({ msg, index }: { msg: any; index: number }) {
     assistant: "bg-green-50 border-green-200",
     system: "bg-amber-50 border-amber-200",
     tool: "bg-purple-50 border-purple-200",
+    reasoning: "bg-slate-50 border-slate-300",
   };
 
   const preview = getMessagePreview(msg);

@@ -268,13 +268,47 @@ export function extractResponseToolCalls(resLog: any): string[] {
   return tools;
 }
 
+// Normalize a request body from any supported entry protocol into a
+// Chat-Completions-shaped messages array. Lets diagnostics / tool
+// summary / conversation flow treat Codex (input[] + instructions),
+// Anthropic (system + messages), and Chat Completions (messages)
+// bodies uniformly.
+function normalizeMessages(body: any): any[] {
+  if (!body) return [];
+  const out: any[] = [];
+  if (body.system) out.push({ role: "system", content: body.system });
+  else if (typeof body.instructions === "string" && body.instructions) {
+    out.push({ role: "system", content: body.instructions });
+  }
+  if (Array.isArray(body.messages)) {
+    out.push(...body.messages);
+  } else if (typeof body.input === "string") {
+    out.push({ role: "user", content: body.input });
+  } else if (Array.isArray(body.input)) {
+    for (const item of body.input) {
+      if (!item) continue;
+      if (item.type === "message") out.push({ role: item.role ?? "user", content: item.content });
+      else if (item.type === "function_call") {
+        out.push({
+          role: "assistant",
+          content: "",
+          tool_calls: [{ id: item.call_id ?? item.id, type: "function", function: { name: item.name, arguments: item.arguments } }],
+        });
+      } else if (item.type === "function_call_output") {
+        out.push({ role: "tool", tool_call_id: item.call_id ?? item.id, content: item.output ?? "" });
+      }
+    }
+  }
+  return out;
+}
+
 // --- Diagnostics ---
 
 export function runDiagnostics(reqLog: any, resLog: any, ctx: RequestContext): DiagItem[] {
   const items: DiagItem[] = [];
   const stopReason = extractStopReason(resLog);
-  const messages = reqLog?.body?.messages;
-  const messageCount = Array.isArray(messages) ? messages.length : 0;
+  const messages = normalizeMessages(reqLog?.body);
+  const messageCount = messages.length;
 
   if (ctx.status !== 200) {
     items.push({ level: "error", title: "Request Failed", detail: `HTTP ${ctx.status}${ctx.error ? `: ${ctx.error}` : ""}` });
@@ -318,7 +352,7 @@ export function runDiagnostics(reqLog: any, resLog: any, ctx: RequestContext): D
 
 export function ToolSummary({ reqLog }: { reqLog: any }) {
   const analysis = useMemo(() => {
-    const messages = reqLog?.body?.messages ?? [];
+    const messages = normalizeMessages(reqLog?.body);
     const result = analyzeToolUsage(messages);
     result.defined = reqLog?.body?.tools?.length ?? 0;
     return result;
@@ -363,7 +397,7 @@ export function ToolSummary({ reqLog }: { reqLog: any }) {
 }
 
 export function ConversationFlow({ reqLog }: { reqLog: any }) {
-  const flow = useMemo(() => buildConversationFlow(reqLog?.body?.messages ?? []), [reqLog]);
+  const flow = useMemo(() => buildConversationFlow(normalizeMessages(reqLog?.body)), [reqLog]);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
 
   if (flow.length === 0) return <div className="text-gray-400 italic text-xs">No messages</div>;
@@ -680,11 +714,11 @@ export function Diagnostics({ reqLog, resLog, ctx }: { reqLog: any; resLog: any;
 
 export function getSharedRequestSections(reqLog: any, resLog: any, ctx: RequestContext): { id: string; label: string }[] {
   const sections: { id: string; label: string }[] = [];
-  const messages = reqLog?.body?.messages;
-  if (Array.isArray(messages) && messages.length > 0) {
+  const messages = normalizeMessages(reqLog?.body);
+  if (messages.length > 0) {
     const hasTools = messages.some((m: any) =>
       Array.isArray(m.content) && m.content.some((p: any) => p.type === "tool_use")
-    );
+    ) || messages.some((m: any) => Array.isArray(m.tool_calls) && m.tool_calls.length > 0);
     if (hasTools) sections.push({ id: "tool-summary", label: "Tool Summary" });
     sections.push({ id: "conv-flow", label: "Flow" });
   }
