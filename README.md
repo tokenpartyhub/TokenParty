@@ -284,6 +284,7 @@ TokenParty/
 - [x] Configurable log retention (1 week / 1 month / 2 months) + rolling daily cleanup; Overview aggregates preserved
 - [x] AI agent detection & per-agent detail panel (Claude Code, OpenClaw)
 - [x] Model-level priority with ordered fallback chain across providers
+- [x] Model aliases (a.k.a. pools) — pin a stable name (e.g. `minimax-latest`) to a list of real model IDs; router rewrites `body.model` to the real upstream id per attempt, ordered by array position; `resolved_model` recorded in `request_index` for audit
 - [x] Route trace — visual routing diagram for each request
 - [x] Upstream model auto-discovery
 - [x] Connection pooling (keep-alive HTTP agents) — prevents TIME_WAIT port exhaustion
