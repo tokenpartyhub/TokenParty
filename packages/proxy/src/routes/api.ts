@@ -3,7 +3,8 @@ import { getConfig, updateConfig } from "../config.js";
 import { getDb, validateAdminToken, getSetting, setSetting } from "../store/db.js";
 import { readLog, getLogStats, runRetentionCleanup, clearAllLogs } from "../store/log-writer.js";
 import { nanoid } from "nanoid";
-import { getModelId, ProviderSchema } from "../types/config.js";
+import { getModelId, ProviderSchema, getAliasEntryId, type AliasEntry } from "../types/config.js";
+import { findOrphanPoolEntries } from "../proxy/router.js";
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -70,7 +71,7 @@ apiRoutes.get("/version/check", async (c) => {
 
 apiRoutes.get("/models", (c) => {
   const config = getConfig();
-  const models: { id: string; providers: string[] }[] = [];
+  const models: { id: string; providers: string[]; isAlias?: boolean; pool?: any[] }[] = [];
   for (const p of config.providers) {
     if (!p.enabled) continue;
     for (const m of p.models) {
@@ -81,6 +82,13 @@ apiRoutes.get("/models", (c) => {
       } else {
         models.push({ id, providers: [p.id] });
       }
+    }
+  }
+  // Append aliases as virtual model entries so the dashboard can show them
+  // alongside real models.
+  if (config.aliases) {
+    for (const [aliasName, pool] of Object.entries(config.aliases)) {
+      models.push({ id: aliasName, providers: [], isAlias: true, pool });
     }
   }
   return c.json(models);
@@ -107,6 +115,60 @@ apiRoutes.post("/providers", async (c) => {
   });
   return c.json(newProvider, 201);
 });
+
+// Given the new provider shape (post-edit) and the id being edited, scan
+// the current aliases map and report which alias pool entries become
+// orphaned by this change. Each report entry carries the alias name and
+// the index in its pool so the dashboard can highlight the exact rows.
+function detectAliasOrphans(
+  config: { aliases?: Record<string, AliasEntry[]> },
+  newProviderModelIds: Set<string>,
+  oldProviderModelIds: Set<string>,
+): { alias: string; index: number; modelId: string }[] {
+  const removed = new Set<string>();
+  for (const id of oldProviderModelIds) {
+    if (!newProviderModelIds.has(id)) removed.add(id);
+  }
+  if (removed.size === 0) return [];
+  const orphans: { alias: string; index: number; modelId: string }[] = [];
+  for (const [aliasName, pool] of Object.entries(config.aliases ?? {})) {
+    for (let i = 0; i < pool.length; i++) {
+      const id = getAliasEntryId(pool[i]);
+      if (removed.has(id)) {
+        orphans.push({ alias: aliasName, index: i, modelId: id });
+      }
+    }
+  }
+  return orphans;
+}
+
+// Strip pool entries whose real model id no longer exists in any enabled
+// provider (or whose id matches one of `removedIds` from a deleted provider).
+// Returns the count of aliases whose pool became empty as a side effect.
+function pruneAliasPools(
+  raw: any,
+  removedIds: Set<string>,
+): { emptiedAliases: string[] } {
+  const aliases = (raw.aliases ?? {}) as Record<string, AliasEntry[]>;
+  const emptiedAliases: string[] = [];
+  for (const [name, pool] of Object.entries(aliases)) {
+    const next: AliasEntry[] = [];
+    for (const entry of pool) {
+      if (!removedIds.has(getAliasEntryId(entry))) next.push(entry);
+    }
+    if (next.length === 0) {
+      // Leave the alias key in place with an empty pool — the router now
+      // surfaces "Alias 'X' has no models" instead of confusingly falling
+      // through to direct-model routing. Dashboard can decide to delete it.
+      aliases[name] = [];
+      emptiedAliases.push(name);
+    } else {
+      aliases[name] = next;
+    }
+  }
+  raw.aliases = aliases;
+  return { emptiedAliases };
+}
 
 apiRoutes.put("/providers/:id", async (c) => {
   const id = c.req.param("id");
@@ -141,21 +203,73 @@ apiRoutes.put("/providers/:id", async (c) => {
   const error = validateProvider(merged);
   if (error) return c.json({ error: "Invalid provider config", detail: error }, 400);
 
+  // Snapshot the model ids before/after the edit so we can flag alias
+  // pool entries that become orphaned by the model change. We don't auto-
+  // prune here — the dashboard wants to see the warning and confirm.
+  const oldIds = new Set<string>((existing.models ?? []).map((m: any) => getModelId(m)));
+  const newIds = new Set<string>(((merged as any).models ?? []).map((m: any) => getModelId(m)));
+  const orphaned = detectAliasOrphans(config, newIds, oldIds);
+
   updateConfig((raw) => {
     const providers = raw.providers as any[];
     const idx = providers.findIndex((p) => p.id === id);
     if (idx === -1) throw new Error("Provider not found");
     providers[idx] = { ...providers[idx], ...body };
   });
-  return c.json({ ok: true });
+  return c.json({ ok: true, orphaned });
 });
 
 apiRoutes.delete("/providers/:id", async (c) => {
   const id = c.req.param("id");
+  const cascade = c.req.query("cascade") === "aliases";
+  const config = getConfig();
+  const provider = config.providers.find((p) => p.id === id);
+  if (!provider) return c.json({ error: "Provider not found" }, 404);
+
+  // Collect ids that disappear with this provider — its own models, plus
+  // any other provider that has `fallback: <this-id>` set (defensive: the
+  // fallback chain in forwarder would otherwise dangle).
+  const removedIds = new Set((provider.models ?? []).map((m) => getModelId(m)));
+  for (const other of config.providers) {
+    if (other.fallback === id) {
+      for (const m of other.models ?? []) removedIds.add(getModelId(m));
+    }
+  }
+
   updateConfig((raw) => {
-    raw.providers = (raw.providers as any[]).filter((p) => p.id !== id);
+    raw.providers = (raw.providers as any[]).filter((p: any) => p.id !== id);
+    if (cascade) {
+      // Cascade: strip pool entries referencing removed ids from every
+      // alias. Aliases whose pool becomes empty are left as empty pools
+      // so the router returns a clear error rather than silently dropping
+      // the alias name.
+      pruneAliasPools(raw, removedIds);
+    }
   });
-  return c.json({ ok: true });
+
+  // Re-read the latest config so we can report cascading effects. When
+  // cascading we still surface any aliases left with empty pools (caller
+  // may want to delete them too).
+  const after = getConfig();
+  const orphans: { alias: string; index: number; modelId: string }[] = [];
+  if (!cascade) {
+    for (const [aliasName, pool] of Object.entries(after.aliases ?? {})) {
+      for (let i = 0; i < pool.length; i++) {
+        const mid = getAliasEntryId(pool[i]);
+        if (removedIds.has(mid)) {
+          orphans.push({ alias: aliasName, index: i, modelId: mid });
+        }
+      }
+    }
+  }
+  const emptied: string[] = [];
+  if (cascade) {
+    for (const [name, pool] of Object.entries(after.aliases ?? {})) {
+      if (Array.isArray(pool) && pool.length === 0) emptied.push(name);
+    }
+  }
+
+  return c.json({ ok: true, orphaned: orphans, cascade, emptied });
 });
 
 // Detect available models from an upstream provider by calling its models
@@ -262,6 +376,97 @@ apiRoutes.delete("/keys/:key", async (c) => {
   const key = c.req.param("key");
   updateConfig((raw) => {
     raw.tokens = (raw.tokens as any[]).filter((t) => t.key !== key);
+  });
+  return c.json({ ok: true });
+});
+
+// --- Aliases (Model Pools) ---
+
+apiRoutes.get("/aliases", (c) => {
+  const config = getConfig();
+  const aliases = config.aliases ?? {};
+  // Return as array of { name, models } for the dashboard.
+  return c.json(
+    Object.entries(aliases).map(([name, models]) => ({ name, models }))
+  );
+});
+
+// Reject pool entries that no enabled provider currently serves. Lets the
+// dashboard surface a clear "these models don't exist" error at save time
+// instead of letting the alias silently fail at request time.
+function validateAliasPool(pool: AliasEntry[]): string | null {
+  if (!Array.isArray(pool) || pool.length === 0) {
+    return "Alias must have at least one model";
+  }
+  const orphans = findOrphanPoolEntries(pool);
+  if (orphans.length > 0) {
+    return `Pool references models not served by any enabled provider: ${orphans.join(", ")}`;
+  }
+  return null;
+}
+
+apiRoutes.post("/aliases", async (c) => {
+  const body = await c.req.json<{ name: string; models: any[] }>();
+  if (!body.name) return c.json({ error: "Alias name is required" }, 400);
+  if (!Array.isArray(body.models) || body.models.length === 0) {
+    return c.json({ error: "Alias must have at least one model" }, 400);
+  }
+  const poolError = validateAliasPool(body.models);
+  if (poolError) return c.json({ error: poolError }, 400);
+  const config = getConfig();
+  if (config.aliases?.[body.name]) {
+    return c.json({ error: `Alias '${body.name}' already exists` }, 409);
+  }
+  updateConfig((raw) => {
+    const aliases = (raw.aliases ?? {}) as Record<string, any[]>;
+    aliases[body.name] = body.models;
+    raw.aliases = aliases;
+  });
+  return c.json({ name: body.name, models: body.models }, 201);
+});
+
+apiRoutes.put("/aliases/:name", async (c) => {
+  const name = c.req.param("name");
+  const body = await c.req.json<{ models?: any[]; name?: string }>();
+  const config = getConfig();
+  if (!config.aliases?.[name]) {
+    return c.json({ error: "Alias not found" }, 404);
+  }
+
+  // When renaming, validate that the new name doesn't collide with an
+  // existing alias (other than the one being renamed). When updating pool,
+  // validate that all entries resolve to live providers.
+  const newName = body.name && body.name !== name ? body.name : name;
+  if (newName !== name && config.aliases?.[newName]) {
+    return c.json({ error: `Alias '${newName}' already exists` }, 409);
+  }
+
+  const newPool = body.models ?? config.aliases[name];
+  const poolError = validateAliasPool(newPool);
+  if (poolError) return c.json({ error: poolError }, 400);
+
+  updateConfig((raw) => {
+    const aliases = (raw.aliases ?? {}) as Record<string, any[]>;
+    if (newName !== name) {
+      // Move: copy with new key, then drop old key. Using the freshly
+      // validated `newPool` (not the pre-rename `aliases[name]`) ensures
+      // the rename path applies pool updates in the same transaction.
+      aliases[newName] = newPool;
+      delete aliases[name];
+    } else {
+      aliases[name] = newPool;
+    }
+    raw.aliases = aliases;
+  });
+  return c.json({ ok: true, name: newName });
+});
+
+apiRoutes.delete("/aliases/:name", async (c) => {
+  const name = c.req.param("name");
+  updateConfig((raw) => {
+    const aliases = (raw.aliases ?? {}) as Record<string, any[]>;
+    delete aliases[name];
+    raw.aliases = aliases;
   });
   return c.json({ ok: true });
 });

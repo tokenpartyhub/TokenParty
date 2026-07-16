@@ -292,6 +292,7 @@ TokenParty/
 - [x] Shareable request URLs (filters, pagination, and detail id in URL)
 - [x] OpenAI Responses → Chat Completions bridge (per-provider, openai-only) — splits `<think>...</think>` into a `reasoning` output item and routes `delta.reasoning_content`; adds `output_text` + `created_at`
 - [x] `/v1/models` matches Codex 0.144+ `ModelInfo` struct (all 38 fields + nested `ModelMessages`/`TruncationPolicyConfig` with correct enum values) — stops "failed to decode models response" warnings
+- [x] Alias pool robustness — rename inline, ghost entries tinted in the dashboard, server-side validation rejects pool entries referencing models no provider serves, provider edit/delete reports orphaned aliases (cascade delete available)
 - [ ] Automatic prompt cache optimization (Anthropic cache_control injection)
 - [ ] Cost savings report ("TokenParty saved you $XX")
 - [ ] Tag-based cost analysis (cost breakdown by project/feature)

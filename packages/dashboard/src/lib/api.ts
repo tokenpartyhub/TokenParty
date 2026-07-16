@@ -86,9 +86,36 @@ export const api = {
   // --- Admin APIs ---
   getProviders: () => request<any[]>("/providers"),
   createProvider: (data: any) => request("/providers", { method: "POST", body: JSON.stringify(data) }),
-  updateProvider: (id: string, data: any) => request(`/providers/${id}`, { method: "PUT", body: JSON.stringify(data) }),
-  deleteProvider: (id: string) => request(`/providers/${id}`, { method: "DELETE" }),
+  // Provider PUT/DELETE may return `orphaned` describing alias pool entries
+  // that became stale because of the model edit. Dashboard uses this to
+  // surface a warning banner so the user can clean up affected aliases.
+  updateProvider: (id: string, data: any) =>
+    request<{ ok: boolean; orphaned?: { alias: string; index: number; modelId: string }[] }>(
+      `/providers/${id}`,
+      { method: "PUT", body: JSON.stringify(data) },
+    ),
   detectModels: (id: string) => request<{ models: string[] }>(`/providers/${id}/detect-models`, { method: "POST" }),
+
+  getAliases: () => request<{ name: string; models: any[] }[]>("/aliases"),
+  createAlias: (data: { name: string; models: any[] }) =>
+    request<{ name: string; models: any[] }>("/aliases", { method: "POST", body: JSON.stringify(data) }),
+  // Alias PUT supports both pool edits and renaming. The response carries
+  // the (possibly new) name so the dashboard can update local state in
+  // one round-trip.
+  updateAlias: (name: string, data: { name?: string; models?: any[] }) =>
+    request<{ ok: boolean; name?: string }>("/aliases/" + encodeURIComponent(name), { method: "PUT", body: JSON.stringify(data) }),
+  deleteAlias: (name: string) =>
+    request("/aliases/" + encodeURIComponent(name), { method: "DELETE" }),
+
+  // Provider delete accepts a cascade flag so the dashboard can ask the
+  // server to strip pool entries referencing the deleted provider's models.
+  // `orphaned` lists affected entries; `emptied` lists aliases left with
+  // an empty pool (the router returns a clear error for those).
+  deleteProvider: (id: string, opts?: { cascade?: boolean }) =>
+    request<{ ok: boolean; orphaned?: { alias: string; index: number; modelId: string }[]; cascade: boolean; emptied?: string[] }>(
+      `/providers/${id}${opts?.cascade ? "?cascade=aliases" : ""}`,
+      { method: "DELETE" },
+    ),
 
   getKeys: () => request<any[]>("/keys"),
   getKeysUsageSummary: () => request<any[]>("/keys/usage-summary"),

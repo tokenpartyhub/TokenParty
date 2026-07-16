@@ -4,6 +4,33 @@ All notable changes to TokenParty are documented here.
 
 ## [Unreleased]
 
+### Added
+- Alias rename UI: click an alias name in **Providers → Model Aliases** to
+  rename it inline (Enter / blur to save, Escape to cancel). The server
+  rejects rename collisions with another existing alias.
+- Alias pool ghost detection: each pool entry that no enabled provider
+  serves is now tinted amber with a `ghost` badge, and a top-level banner
+  lists affected aliases. Pool edits drop dead entries on save.
+- Provider delete accepts `?cascade=aliases` to strip pool entries that
+  reference the deleted provider's models in one shot; affected aliases
+  are reported via the response so the dashboard can confirm.
+- `POST /aliases` and `PUT /aliases/:name` now reject pool entries
+  referencing models that no enabled provider serves, returning 400 with
+  the ghost ids listed.
+- `PUT /providers/:id` returns an `orphaned` array listing alias pool
+  entries that became stale because of the model change, so the
+  dashboard can surface a warning instead of failing silently on the
+  next request.
+
+### Changed
+- Alias pool error messaging: a configured alias with an empty pool now
+  returns `Alias 'X' has no models` instead of the misleading
+  `No provider available for model: X`.
+- `Available Models` on the alias editor no longer hides real model ids
+  that already appear in *some other* pool — a single model can now sit
+  in multiple alias pools (e.g. `gpt-5` in both `performance` and
+  `daily`). Duplicate detection within a single pool is preserved.
+
 ## [0.0.33] - 2026-07-15
 
 ### Fixed

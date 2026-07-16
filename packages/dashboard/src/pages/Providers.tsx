@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { api } from "../lib/api";
 
 type ModelConfig = string | { id: string; inputPrice?: number; outputPrice?: number; cacheReadPrice?: number; cacheWritePrice?: number; priority?: number };
@@ -62,7 +62,7 @@ export default function Providers() {
   const [showNewGroupInput, setShowNewGroupInput] = useState(false);
   const [editingGroup, setEditingGroup] = useState<string | null>(null);
   const [editingGroupName, setEditingGroupName] = useState("");
-  const [view, setView] = useState<"providers" | "routing">("providers");
+  const [view, setView] = useState<"providers" | "routing" | "aliases">("providers");
   const [detecting, setDetecting] = useState(false);
   const [detectMsg, setDetectMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
 
@@ -337,10 +337,18 @@ export default function Providers() {
         >
           Model Routing
         </button>
+        <button
+          onClick={() => setView("aliases")}
+          className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${view === "aliases" ? "border-indigo-600 text-indigo-600" : "border-transparent text-gray-500 hover:text-gray-700"}`}
+        >
+          Model Aliases
+        </button>
       </div>
 
       {view === "routing" ? (
         <RoutingView providers={providers} onEdit={(p) => { setEditing(p); setIsNew(false); setDetectMsg(null); }} />
+      ) : view === "aliases" ? (
+        <AliasesView providers={providers} />
       ) : (
         <div className="space-y-4">
           {allGroups.map((g) => renderGroupSection(g, g, false))}
@@ -753,6 +761,525 @@ function Field({ label, value, onChange }: { label: string; value: string; onCha
         onChange={(e) => onChange(e.target.value)}
         className="w-full border rounded px-3 py-2 text-sm"
       />
+    </div>
+  );
+}
+
+type AliasEntry = string | { id: string; priority?: number };
+
+function getAliasId(e: AliasEntry): string {
+  return typeof e === "string" ? e : e.id;
+}
+
+type DragSource =
+  | { kind: "available"; modelId: string }
+  | { kind: "pool"; aliasName: string; index: number }
+  | { kind: "newpool"; index: number };
+
+function AliasesView({ providers }: { providers: Provider[] }) {
+  const [aliases, setAliases] = useState<{ name: string; models: AliasEntry[] }[]>([]);
+  const [newPool, setNewPool] = useState<string[]>([]);
+  const [newPoolName, setNewPoolName] = useState("");
+  const [newPoolNameError, setNewPoolNameError] = useState(false);
+  const [dragSource, setDragSource] = useState<DragSource | null>(null);
+  const [dropTarget, setDropTarget] = useState<string | null>(null);
+  const [savingNew, setSavingNew] = useState(false);
+  // Map alias name → list of orphan (modelId, index) pairs. The dashboard
+  // tints rows that reference an id no longer served by any provider and
+  // shows a top-level banner listing affected aliases. Populated locally
+  // when the user makes changes, plus when an API call returns orphans.
+  const [orphansByAlias, setOrphansByAlias] = useState<Map<string, { modelId: string; index: number }[]>>(new Map());
+  // alias name currently being renamed inline
+  const [renamingAlias, setRenamingAlias] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
+  const pendingSaveRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+
+  const allModelIds = providers
+    .filter((p) => p.enabled)
+    .flatMap((p) => p.models.map(getModelId))
+    .filter((id, i, arr) => arr.indexOf(id) === i)
+    .sort();
+
+  // A real model id can appear in multiple alias pools (e.g. gpt-5 might
+  // sit in both a "performance" and "daily" pool). The previous
+  // usedInPools filter hid ids that were already in *any* pool, which
+  // broke that legitimate use case. Now we only exclude ids that the user
+  // has dragged into the *current new pool* — duplicate detection within
+  // existing pools is handled by handleDrop's `models.includes(modelId)`
+  // guard. Cross-pool reuse is allowed.
+  const availableModels = allModelIds.filter((id) => !newPool.includes(id));
+
+  const load = () =>
+    api
+      .getAliases()
+      .then((rows) => {
+        setAliases(rows);
+        // Re-derive ghost entries on every load so removing a model from
+        // a provider (without any explicit alias save) still surfaces here.
+        const next = new Map<string, { modelId: string; index: number }[]>();
+        const liveSet = new Set(allModelIds);
+        for (const a of rows) {
+          const ghosts: { modelId: string; index: number }[] = [];
+          a.models.forEach((entry, i) => {
+            const id = getAliasId(entry);
+            if (!liveSet.has(id)) ghosts.push({ modelId: id, index: i });
+          });
+          if (ghosts.length > 0) next.set(a.name, ghosts);
+        }
+        setOrphansByAlias(next);
+      })
+      .catch(console.error);
+  useEffect(() => { load(); /* re-run when allModelIds changes too */ }, [allModelIds.join("|")]);
+
+  const remove = async (name: string) => {
+    if (!confirm(`Delete alias "${name}"?`)) return;
+    await api.deleteAlias(name);
+    load();
+  };
+
+  const beginRename = (name: string) => {
+    setRenamingAlias(name);
+    setRenameDraft(name);
+  };
+
+  const cancelRename = () => {
+    setRenamingAlias(null);
+    setRenameDraft("");
+  };
+
+  const commitRename = async (oldName: string) => {
+    const newName = renameDraft.trim();
+    setRenamingAlias(null);
+    setRenameDraft("");
+    if (!newName || newName === oldName) return;
+    if (aliases.some((a) => a.name === newName)) {
+      alert(`Alias "${newName}" already exists`);
+      return;
+    }
+    try {
+      const res = await api.updateAlias(oldName, { name: newName });
+      // Server is the source of truth — it returns the resolved name.
+      setAliases((prev) => prev.map((a) => (a.name === oldName ? { ...a, name: res.name ?? newName } : a)));
+      // Re-key the orphan map so warnings track the renamed alias.
+      setOrphansByAlias((prev) => {
+        if (!prev.has(oldName)) return prev;
+        const next = new Map(prev);
+        next.set(res.name ?? newName, next.get(oldName)!);
+        next.delete(oldName);
+        return next;
+      });
+      // Any pending debounced save for the old name must be cancelled —
+      // it would otherwise fire with a stale URL and either no-op or 404.
+      const timers = pendingSaveRef.current;
+      const pending = timers.get(oldName);
+      if (pending) {
+        clearTimeout(pending);
+        timers.delete(oldName);
+      }
+      load();
+    } catch (e: any) {
+      alert(`Rename failed: ${e.message}`);
+    }
+  };
+
+  const updateAliasModels = (name: string, models: string[]) => {
+    setAliases((prev) => prev.map((a) => (a.name === name ? { ...a, models } : a)));
+    const timers = pendingSaveRef.current;
+    const existing = timers.get(name);
+    if (existing) clearTimeout(existing);
+    timers.set(
+      name,
+      setTimeout(() => {
+        timers.delete(name);
+        api.updateAlias(name, { models }).then((res) => {
+          // If server reports a renamed key (rename + edit in flight), sync.
+          if (res.name && res.name !== name) {
+            setAliases((prev) => prev.map((a) => (a.name === name ? { ...a, name: res.name! } : a)));
+          }
+        }).catch((e: any) => {
+          alert(`Update failed: ${e.message}`);
+          load();
+        });
+      }, 400),
+    );
+  };
+
+  const saveNewPool = async () => {
+    if (!newPoolName.trim()) { setNewPoolNameError(true); return; }
+    if (newPool.length === 0) return;
+    setSavingNew(true);
+    try {
+      await api.createAlias({ name: newPoolName, models: newPool });
+      setNewPool([]);
+      setNewPoolName("");
+      setNewPoolNameError(false);
+      load();
+    } catch (e: any) {
+      alert(`Save failed: ${e.message}`);
+    } finally {
+      setSavingNew(false);
+    }
+  };
+
+  const cancelNewPool = () => {
+    setNewPool([]);
+    setNewPoolName("");
+    setNewPoolNameError(false);
+  };
+
+  const removePoolItem = (aliasName: string, index: number) => {
+    const alias = aliases.find((a) => a.name === aliasName);
+    if (!alias) return;
+    const next = alias.models.map(getAliasId).filter((_, i) => i !== index);
+    updateAliasModels(aliasName, next);
+  };
+
+  const removeNewPoolItem = (index: number) => {
+    setNewPool(newPool.filter((_, i) => i !== index));
+  };
+
+  const handleDrop = (target: string, targetIdx?: number) => {
+    setDropTarget(null);
+    if (!dragSource) return;
+
+    if (dragSource.kind === "available") {
+      const { modelId } = dragSource;
+      if (target === "__newpool__") {
+        if (!newPool.includes(modelId)) setNewPool([...newPool, modelId]);
+      } else if (target !== "__available__") {
+        const alias = aliases.find((a) => a.name === target);
+        if (alias) {
+          const models = alias.models.map(getAliasId);
+          if (!models.includes(modelId)) {
+            const insertAt = targetIdx !== undefined ? targetIdx : models.length;
+            models.splice(insertAt, 0, modelId);
+            updateAliasModels(target, models);
+          }
+        }
+      }
+    } else if (dragSource.kind === "pool") {
+      const { aliasName, index } = dragSource;
+      const srcAlias = aliases.find((a) => a.name === aliasName);
+      if (!srcAlias) return;
+      const modelId = getAliasId(srcAlias.models[index]);
+
+      if (target === "__newpool__") {
+        if (!newPool.includes(modelId)) {
+          setNewPool([...newPool, modelId]);
+          const srcModels = srcAlias.models.map(getAliasId).filter((_, i) => i !== index);
+          updateAliasModels(aliasName, srcModels);
+        }
+      } else if (target === "__available__") {
+        const srcModels = srcAlias.models.map(getAliasId).filter((_, i) => i !== index);
+        updateAliasModels(aliasName, srcModels);
+      } else {
+        const dstAlias = aliases.find((a) => a.name === target);
+        if (!dstAlias) return;
+        const dstModels = dstAlias.models.map(getAliasId);
+        if (aliasName === target) {
+          if (index === targetIdx) return;
+          const [moved] = dstModels.splice(index, 1);
+          const insertAt = targetIdx !== undefined ? targetIdx : dstModels.length;
+          dstModels.splice(insertAt, 0, moved);
+          updateAliasModels(target, dstModels);
+        } else {
+          if (dstModels.includes(modelId)) return;
+          const insertAt = targetIdx !== undefined ? targetIdx : dstModels.length;
+          dstModels.splice(insertAt, 0, modelId);
+          const srcModels = srcAlias.models.map(getAliasId).filter((_, i) => i !== index);
+          updateAliasModels(aliasName, srcModels);
+          updateAliasModels(target, dstModels);
+        }
+      }
+    } else if (dragSource.kind === "newpool") {
+      const { index } = dragSource;
+      const modelId = newPool[index];
+      if (target === "__newpool__") {
+        if (targetIdx === undefined || targetIdx === index) return;
+        const np = [...newPool];
+        const [moved] = np.splice(index, 1);
+        np.splice(targetIdx, 0, moved);
+        setNewPool(np);
+      } else if (target === "__available__") {
+        setNewPool(newPool.filter((_, i) => i !== index));
+      } else {
+        const dstAlias = aliases.find((a) => a.name === target);
+        if (!dstAlias) return;
+        const dstModels = dstAlias.models.map(getAliasId);
+        if (!dstModels.includes(modelId)) {
+          const insertAt = targetIdx !== undefined ? targetIdx : dstModels.length;
+          dstModels.splice(insertAt, 0, modelId);
+          updateAliasModels(target, dstModels);
+        }
+        setNewPool(newPool.filter((_, i) => i !== index));
+      }
+    }
+
+    setDragSource(null);
+  };
+
+  const onDragOver = (e: React.DragEvent, target: string) => {
+    e.preventDefault();
+    setDropTarget(target);
+  };
+
+  const onDragLeave = (e: React.DragEvent, target: string) => {
+    if (e.currentTarget === e.target || !e.currentTarget.contains(e.relatedTarget as Node)) {
+      if (dropTarget === target) setDropTarget(null);
+    }
+  };
+
+  const orphanSummary = Array.from(orphansByAlias.entries());
+
+  return (
+    <div>
+      <div className="mb-4">
+        <p className="text-sm text-gray-500">
+          Drag models between <b>Available Models</b> and <b>New Alias Pool</b> (next to each other) to build an alias.
+          Array order = priority (first = preferred). Drop into an existing pool to add, or drag back to Available to remove.
+          The same model can appear in multiple pools — e.g. <code className="font-mono">gpt-5</code> may sit in both a
+          <code className="font-mono">performance</code> and a <code className="font-mono">daily</code> pool.
+        </p>
+      </div>
+
+      {orphanSummary.length > 0 && (
+        <div className="mb-3 px-3 py-2 bg-amber-50 border border-amber-300 rounded text-xs text-amber-900">
+          <span className="font-semibold">⚠ {orphanSummary.length} alias pool{orphanSummary.length === 1 ? "" : "s"} reference models that no provider serves.</span>{" "}
+          Affected entries are tinted below. Use the ✕ on each row to remove the dead model, or click an alias name to rename it.
+        </div>
+      )}
+
+      <div className="grid grid-cols-[1fr_300px_280px] gap-4 items-start">
+        {/* LEFT: Configured alias pools */}
+        <div className="space-y-3 min-h-[400px] max-h-[calc(100vh-220px)] overflow-y-auto pr-1">
+          {aliases.length === 0 && newPool.length === 0 && (
+            <div className="text-center text-gray-400 py-12 border-2 border-dashed border-gray-200 rounded-lg">
+              No aliases configured. Drag models from <b>Available</b> (right) into <b>New Alias Pool</b> (middle) to create one.
+            </div>
+          )}
+          {aliases.map((alias) => {
+            const models = alias.models.map(getAliasId);
+            const isOver = dropTarget === alias.name;
+            const aliasOrphans = orphansByAlias.get(alias.name) ?? [];
+            const orphanIdSet = new Set(aliasOrphans.map((o) => o.modelId));
+            return (
+              <div
+                key={alias.name}
+                className={`border-2 border-dashed rounded-lg p-3 transition-colors ${
+                  isOver ? "border-indigo-400 bg-indigo-50/50" : "border-gray-200 bg-white"
+                }`}
+                onDragOver={(e) => onDragOver(e, alias.name)}
+                onDragLeave={(e) => onDragLeave(e, alias.name)}
+                onDrop={() => handleDrop(alias.name)}
+              >
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    {renamingAlias === alias.name ? (
+                      <input
+                        autoFocus
+                        value={renameDraft}
+                        onChange={(e) => setRenameDraft(e.target.value)}
+                        onBlur={() => commitRename(alias.name)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") commitRename(alias.name);
+                          if (e.key === "Escape") cancelRename();
+                        }}
+                        className="font-mono text-sm font-semibold border border-indigo-400 rounded px-1.5 py-0.5"
+                      />
+                    ) : (
+                      <span
+                        className="font-mono text-sm font-semibold text-gray-800 cursor-text hover:text-indigo-600"
+                        title="Click to rename"
+                        onClick={() => beginRename(alias.name)}
+                      >
+                        {alias.name}
+                      </span>
+                    )}
+                    <span className="text-xs text-gray-400">
+                      {models.length} model{models.length !== 1 ? "s" : ""}
+                    </span>
+                    {aliasOrphans.length > 0 && (
+                      <span
+                        className="text-[10px] px-1.5 py-0.5 bg-amber-200 text-amber-900 rounded uppercase tracking-wide font-semibold"
+                        title={`${aliasOrphans.length} pool entr${aliasOrphans.length === 1 ? "y" : "ies"} reference models no provider serves`}
+                      >
+                        {aliasOrphans.length} ghost{aliasOrphans.length === 1 ? "" : "s"}
+                      </span>
+                    )}
+                  </div>
+                  <button
+                    onClick={() => remove(alias.name)}
+                    className="text-xs text-red-500 hover:text-red-700"
+                  >
+                    Delete
+                  </button>
+                </div>
+                {models.length === 0 ? (
+                  <div className="text-xs text-gray-400 text-center py-3 border border-dashed border-gray-200 rounded">
+                    Drop models here
+                  </div>
+                ) : (
+                  <div className="space-y-1">
+                    {models.map((id, i) => {
+                      const isGhost = orphanIdSet.has(id);
+                      return (
+                        <div
+                          key={id}
+                          draggable
+                          onDragStart={() => setDragSource({ kind: "pool", aliasName: alias.name, index: i })}
+                          onDragEnd={() => { setDragSource(null); setDropTarget(null); }}
+                          onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); setDropTarget(alias.name); }}
+                          onDrop={(e) => { e.stopPropagation(); handleDrop(alias.name, i); }}
+                          className={`flex items-center gap-2 px-2.5 py-1.5 rounded border cursor-grab active:cursor-grabbing transition-colors select-none ${
+                            isGhost
+                              ? "bg-amber-50 border-amber-300 hover:bg-amber-100"
+                              : "bg-gray-50 border-gray-200 hover:bg-gray-100"
+                          }`}
+                        >
+                          <span className="text-gray-300 text-xs select-none">⠿</span>
+                          <span className="text-gray-400 text-[10px] w-4 text-center font-medium">{i + 1}</span>
+                          <span
+                            className={`font-mono text-xs flex-1 truncate ${isGhost ? "text-amber-900" : ""}`}
+                            title={isGhost ? "Model no longer served by any provider — click ✕ to remove from pool" : undefined}
+                          >
+                            {id}
+                          </span>
+                          {isGhost && (
+                            <span className="text-[9px] px-1 py-0.5 bg-amber-300 text-amber-900 rounded uppercase tracking-wide font-semibold">
+                              ghost
+                            </span>
+                          )}
+                          <button
+                            onClick={(e) => { e.stopPropagation(); removePoolItem(alias.name, i); }}
+                            className="text-gray-400 hover:text-red-500 text-xs leading-none"
+                            title="Remove from pool"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* RIGHT: New alias pool drop zone */}
+        <div
+          className={`border-2 border-dashed rounded-lg p-3 min-h-[400px] transition-colors ${
+            dropTarget === "__newpool__"
+              ? "border-emerald-400 bg-emerald-50/50"
+              : newPool.length > 0
+                ? "border-amber-300 bg-amber-50/30"
+                : "border-gray-200 bg-white"
+          }`}
+          onDragOver={(e) => onDragOver(e, "__newpool__")}
+          onDragLeave={(e) => onDragLeave(e, "__newpool__")}
+          onDrop={() => handleDrop("__newpool__")}
+        >
+          <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
+            New Alias Pool
+          </h3>
+
+          {newPool.length === 0 ? (
+            <div className="text-sm text-gray-400 text-center py-10 border-2 border-dashed border-gray-200 rounded">
+              Drop models here to<br />create a new alias
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Alias Name</label>
+                <input
+                  type="text"
+                  value={newPoolName}
+                  onChange={(e) => { setNewPoolName(e.target.value); setNewPoolNameError(false); }}
+                  placeholder="e.g. minimax-latest"
+                  autoFocus
+                  className={`w-full border rounded px-2.5 py-1.5 text-sm font-mono ${
+                    newPoolNameError ? "border-red-500 bg-red-50" : ""
+                  }`}
+                />
+                {newPoolNameError && (
+                  <p className="text-red-500 text-[10px] mt-1">Name is required</p>
+                )}
+              </div>
+              <div className="space-y-1">
+                {newPool.map((id, i) => (
+                  <div
+                    key={id}
+                    draggable
+                    onDragStart={() => setDragSource({ kind: "newpool", index: i })}
+                    onDragEnd={() => { setDragSource(null); setDropTarget(null); }}
+                    onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); setDropTarget("__newpool__"); }}
+                    onDrop={(e) => { e.stopPropagation(); handleDrop("__newpool__", i); }}
+                    className="flex items-center gap-2 px-2.5 py-1.5 rounded bg-white border border-amber-200 cursor-grab active:cursor-grabbing hover:bg-amber-50 transition-colors select-none"
+                  >
+                    <span className="text-gray-300 text-xs select-none">⠿</span>
+                    <span className="text-gray-400 text-[10px] w-4 text-center font-medium">{i + 1}</span>
+                    <span className="font-mono text-xs flex-1 truncate">{id}</span>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); removeNewPoolItem(i); }}
+                      className="text-gray-400 hover:text-red-500 text-xs leading-none"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <div className="flex gap-2 pt-1">
+                <button
+                  onClick={saveNewPool}
+                  disabled={savingNew || newPool.length === 0}
+                  className="flex-1 px-3 py-1.5 text-xs bg-indigo-600 text-white rounded hover:bg-indigo-700 disabled:opacity-50"
+                >
+                  {savingNew ? "Saving…" : "Save Alias"}
+                </button>
+                <button
+                  onClick={cancelNewPool}
+                  className="px-3 py-1.5 text-xs text-gray-600 border border-gray-300 rounded hover:bg-gray-50"
+                >
+                  Clear
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* RIGHT: Available models — adjacent to New Alias Pool for short drags */}
+        <div
+          className={`border-2 border-dashed rounded-lg p-3 min-h-[400px] max-h-[calc(100vh-220px)] overflow-y-auto transition-colors ${
+            dropTarget === "__available__" ? "border-indigo-400 bg-indigo-50/50" : "border-gray-200 bg-white"
+          }`}
+          onDragOver={(e) => onDragOver(e, "__available__")}
+          onDragLeave={(e) => onDragLeave(e, "__available__")}
+          onDrop={() => handleDrop("__available__")}
+        >
+          <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
+            Available Models <span className="text-gray-400 normal-case">({availableModels.length})</span>
+          </h3>
+          {availableModels.length === 0 ? (
+            <div className="text-sm text-gray-400 text-center py-8">
+              All models are in pools
+            </div>
+          ) : (
+            <div className="flex flex-wrap gap-1.5">
+              {availableModels.map((id) => (
+                <div
+                  key={id}
+                  draggable
+                  onDragStart={() => setDragSource({ kind: "available", modelId: id })}
+                  onDragEnd={() => { setDragSource(null); setDropTarget(null); }}
+                  className="px-2 py-1 text-xs font-mono bg-gray-50 border border-gray-200 rounded cursor-grab active:cursor-grabbing hover:bg-indigo-50 hover:border-indigo-300 transition-colors select-none"
+                >
+                  {id}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
