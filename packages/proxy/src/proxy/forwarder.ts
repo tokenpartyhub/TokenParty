@@ -35,6 +35,14 @@ export type RouteTraceEntry = {
   errorBody?: unknown;
 };
 
+// Optional routing metadata passed when the request used a model alias.
+// aliasName is the alias the user requested (used for logging); realModelIds
+// maps each provider to the real model ID it should receive in body.model.
+export interface ForwardOptions {
+  aliasName?: string;
+  realModelIds?: Map<string, string>;
+}
+
 // Outcome of one upstream attempt. Two states:
 //   success — we have a Response ready to hand to the client.
 //   fail    — the attempt did not produce a usable response; carry the
@@ -105,6 +113,7 @@ export async function forwardRequest(
   candidateProviders: Provider[],
   targetPath: string,
   _routeTrace?: RouteTraceEntry[],
+  options?: ForwardOptions,
 ): Promise<Response> {
   const routeTrace = _routeTrace ?? [];
   const requestId = nanoid();
@@ -112,7 +121,10 @@ export async function forwardRequest(
 
   const body = await c.req.json();
   const isStreaming = body?.stream === true;
-  const model = body?.model ?? "unknown";
+  // When routing via an alias, log the alias name (what the user configured)
+  // rather than the resolved real model. The real model per-attempt is tracked
+  // separately via resolvedModel in recordRequest.
+  const model = options?.aliasName ?? body?.model ?? "unknown";
   const isResponsesApi = !!body?.input && !body?.messages;
 
   const extractedTags = extractTags({ headers: c.req.raw.headers, path: c.req.path, body, model });
@@ -166,7 +178,12 @@ export async function forwardRequest(
 
   for (let i = 0; i < candidateProviders.length; i++) {
     const provider = candidateProviders[i];
-    const providerPricing = getModelPricing(provider.models.find((m) => getModelId(m) === model)!);
+    // When routing via an alias, each provider may serve a different real
+    // model from the pool. The real model ID goes in the upstream body;
+    // the alias name stays in `model` for logging.
+    const realModelId = options?.realModelIds?.get(provider.id);
+    const pricingModelId = realModelId ?? model;
+    const providerPricing = getModelPricing(provider.models.find((m) => getModelId(m) === pricingModelId)!);
     const { key: selectedKey, index: apiKeyIndex } = selectApiKey(provider);
     const upstreamHeaders = buildTargetHeaders(provider, selectedKey, c.req.raw.headers);
     // Bridge a Responses entry to Chat Completions when the provider asks for
@@ -176,7 +193,11 @@ export async function forwardRequest(
     const bridge = needsResponsesBridge(provider, isResponsesApi);
     const effectiveTargetPath = bridge ? "/chat/completions" : targetPath;
     const targetUrl = `${provider.baseUrl}${effectiveTargetPath}`;
-    const convertedBody = bridge ? responsesRequestToChat(body) : body;
+    // Rewrite body.model to the real model ID so upstream receives a
+    // model name it actually recognises. Only needed for alias routing;
+    // direct requests already carry the real ID.
+    const bodyForAttempt = realModelId ? { ...body, model: realModelId } : body;
+    const convertedBody = bridge ? responsesRequestToChat(bodyForAttempt) : bodyForAttempt;
     // buildAttemptBody adds stream_options.include_usage for Chat Completions
     // streaming. When bridging, convertedBody is already chat-shaped, so pass
     // isResponsesApi=false so the usage option is added (Codex relies on the
@@ -214,6 +235,7 @@ export async function forwardRequest(
       model,
       attemptIndex: i,
       upstreamSignal: upstreamController.signal,
+      resolvedModel: realModelId,
     });
 
     if (attemptResult.kind === "success") {
@@ -270,6 +292,7 @@ export async function forwardRequest(
       customTags,
       routeTrace,
       startTime,
+      resolvedModel: realModelId,
     });
 
     // Client disconnected — there's nobody to receive a fallback
@@ -329,6 +352,8 @@ interface AttemptParams {
   model: string;
   attemptIndex: number;
   upstreamSignal: AbortSignal;
+  // Real model ID when routing via an alias. Undefined for direct requests.
+  resolvedModel?: string;
 }
 
 // One upstream attempt. Two paths:
@@ -358,6 +383,7 @@ async function attemptProvider(params: AttemptParams): Promise<AttemptResult> {
         // sees Responses-format bytes, which asyncParseBufferForLog already
         // understands (response.output_text.delta / response.completed).
         streamTransform: bridge ? new ChatToResponsesSseTransform(model) : undefined,
+        resolvedModel: params.resolvedModel,
       });
       if (result.kind === "fail") return result;
       routeTrace.push({ provider: provider.id, status: 200, latencyMs: 0 });
@@ -438,6 +464,7 @@ async function attemptProvider(params: AttemptParams): Promise<AttemptResult> {
       customTags,
       routeTrace,
       startTime,
+      resolvedModel: params.resolvedModel,
     });
 
     return { kind: "success", response: c.json(body, response.status as any), ttftMs: latencyMs };
@@ -484,6 +511,9 @@ interface RawStreamPassthroughParams {
   // transform. Used by the Responses->Chat bridge to convert Chat
   // Completions SSE into Responses SSE in-stream. Undefined = verbatim.
   streamTransform?: Transform;
+  // Real model ID when routing via an alias. Passed through to the async
+  // log parser so streaming requests also record resolved_model.
+  resolvedModel?: string;
 }
 
 // Same-protocol streaming pass-through. Pipes the upstream body through
@@ -493,7 +523,7 @@ function rawStreamPassthrough(params: RawStreamPassthroughParams): Promise<Attem
   const {
     targetUrl, upstreamHeaders, body, requestId, provider, model, token,
     startTime, logFile, apiKeyIndex, pricing, agent, customTags, routeTrace, attemptIndex, upstreamSignal,
-    streamTransform,
+    streamTransform, resolvedModel,
   } = params;
 
   const url = new URL(targetUrl);
@@ -584,6 +614,7 @@ function rawStreamPassthrough(params: RawStreamPassthroughParams): Promise<Attem
             rawChunks, res.headers["content-encoding"] as string | undefined,
             requestId, respHeaders, provider, model, token, startTime, logFile,
             apiKeyIndex, pricing, agent, customTags, routeTrace, status, attemptIndex, ttftMs,
+            resolvedModel,
           );
           callback();
         },
@@ -647,6 +678,7 @@ function asyncParseBufferForLog(
   upstreamStatus?: number,
   attemptIndex?: number,
   ttftMs?: number,
+  resolvedModel?: string,
 ) {
   (async () => {
     let text: string;
@@ -757,6 +789,7 @@ function asyncParseBufferForLog(
       customTags,
       routeTrace,
       startTime,
+      resolvedModel,
     });
   })().catch((e) => console.error(`[tokenparty] async log parse error for ${requestId}:`, e));
 }

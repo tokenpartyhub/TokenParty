@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { authMiddleware } from "../proxy/auth.js";
 import { forwardRequest } from "../proxy/forwarder.js";
-import { resolveProvider, listAvailableModelsDetailed, type AvailableModelEntry } from "../proxy/router.js";
+import { resolveProvider, resolveAlias, listAvailableModelsDetailed, type AvailableModelEntry } from "../proxy/router.js";
 import { pickProviderForEntry } from "../proxy/route-picker.js";
 import type { AppEnv } from "../types/env.js";
 
@@ -131,13 +131,17 @@ openaiRoutes.post("/chat/completions", async (c) => {
   const body = await c.req.json();
   const model = body.model;
 
-  const result = resolveProvider(model, token);
+  const aliasEntries = resolveAlias(model);
+  const result = resolveProvider(model, token, aliasEntries ?? undefined);
   if ("error" in result) {
     return c.json({ error: result.error }, 400);
   }
   const picked = pickForOpenAI(result.providers);
   if ("error" in picked) return c.json({ error: picked.error }, 400);
-  return forwardRequest(c, picked.providers, "/chat/completions");
+  return forwardRequest(c, picked.providers, "/chat/completions", undefined, {
+    aliasName: aliasEntries ? model : undefined,
+    realModelIds: result.realModelIds,
+  });
 });
 
 // OpenAI Responses API (used by codex CLI and modern OpenAI SDKs).
@@ -146,11 +150,15 @@ openaiRoutes.post("/responses", async (c) => {
   const body = await c.req.json();
   const model = body.model;
 
-  const result = resolveProvider(model, token);
+  const aliasEntries = resolveAlias(model);
+  const result = resolveProvider(model, token, aliasEntries ?? undefined);
   if ("error" in result) {
     return c.json({ error: result.error }, 400);
   }
   const picked = pickForOpenAI(result.providers);
   if ("error" in picked) return c.json({ error: picked.error }, 400);
-  return forwardRequest(c, picked.providers, "/responses");
+  return forwardRequest(c, picked.providers, "/responses", undefined, {
+    aliasName: aliasEntries ? model : undefined,
+    realModelIds: result.realModelIds,
+  });
 });

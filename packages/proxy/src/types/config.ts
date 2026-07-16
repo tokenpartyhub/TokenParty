@@ -15,6 +15,18 @@ const ModelSchema = z.union([
   }),
 ]);
 
+// An entry in a model alias pool. Either a plain model ID string or an
+// object with an explicit priority controlling selection order within
+// the pool. Pricing is NOT carried here; it comes from the provider's
+// own model entry.
+export const AliasEntrySchema = z.union([
+  z.string(),
+  z.object({
+    id: z.string(),
+    priority: z.number().optional(),
+  }),
+]);
+
 export const ProviderSchema = z.object({
   id: z.string(),
   type: z.enum(["openai", "anthropic"]),
@@ -68,6 +80,12 @@ export const ConfigSchema = z.object({
   }),
   providers: z.array(ProviderSchema),
   tokens: z.array(TokenSchema),
+  // Model aliases map a stable name to a pool of real model IDs. When a
+  // request arrives with an alias as the model name, the router resolves
+  // it to the highest-priority available model in the pool. Lets users
+  // pin a stable name (e.g. "minimax-latest") without changing client
+  // configs when models upgrade.
+  aliases: z.record(z.string(), z.array(AliasEntrySchema)).default({}),
 });
 
 // Maps a retention period enum to the number of days of detail logs kept.
@@ -87,6 +105,7 @@ export type ModelConfig = z.infer<typeof ModelSchema>;
 export type Provider = z.infer<typeof ProviderSchema>;
 export type Token = z.infer<typeof TokenSchema>;
 export type Config = z.infer<typeof ConfigSchema>;
+export type AliasEntry = z.infer<typeof AliasEntrySchema>;
 
 export function getModelId(model: ModelConfig): string {
   return typeof model === "string" ? model : model.id;
@@ -104,4 +123,8 @@ export function getModelPricing(model: ModelConfig): { inputPrice?: number; outp
 export function getModelPriority(model: ModelConfig): number {
   if (typeof model === "object" && model.priority !== undefined) return model.priority;
   return Infinity;
+}
+
+export function getAliasEntryId(entry: AliasEntry): string {
+  return typeof entry === "string" ? entry : entry.id;
 }

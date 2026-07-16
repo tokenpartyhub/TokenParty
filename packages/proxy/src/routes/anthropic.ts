@@ -1,7 +1,7 @@
 import { Hono, type Context } from "hono";
 import { authMiddleware } from "../proxy/auth.js";
 import { forwardRequest } from "../proxy/forwarder.js";
-import { resolveProvider, listAvailableModels } from "../proxy/router.js";
+import { resolveProvider, resolveAlias, listAvailableModels } from "../proxy/router.js";
 import { pickProviderForEntry } from "../proxy/route-picker.js";
 import type { AppEnv } from "../types/env.js";
 
@@ -37,11 +37,15 @@ anthropicRoutes.post("/v1/messages", async (c) => {
   const body = await c.req.json();
   const model = body.model;
 
-  const result = resolveProvider(model, token);
+  const aliasEntries = resolveAlias(model);
+  const result = resolveProvider(model, token, aliasEntries ?? undefined);
   if ("error" in result) {
     return c.json({ error: result.error }, 400);
   }
   const picked = pickProviderForEntry(result.providers, "anthropic");
   if ("error" in picked) return c.json({ error: picked.error }, 400);
-  return forwardRequest(c, picked.providers, "/v1/messages");
+  return forwardRequest(c, picked.providers, "/v1/messages", undefined, {
+    aliasName: aliasEntries ? model : undefined,
+    realModelIds: result.realModelIds,
+  });
 });

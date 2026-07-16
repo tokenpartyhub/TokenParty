@@ -109,6 +109,12 @@ function runMigrations(db: Database.Database) {
     // upstream. Distinct from latency_ms (total wall-clock duration).
     db.exec(`ALTER TABLE request_index ADD COLUMN ttft_ms INTEGER DEFAULT 0`);
   }
+  if (!colNames.has("resolved_model")) {
+    // Real model ID when the request was routed via an alias. Empty
+    // string for direct (non-alias) requests. Lets the dashboard show
+    // "minimax-latest → MiniMax-M4" in request details.
+    db.exec(`ALTER TABLE request_index ADD COLUMN resolved_model TEXT DEFAULT ''`);
+  }
 
   const dailyCols = db.prepare(`PRAGMA table_info(usage_daily)`).all() as { name: string }[];
   const dailyColNames = new Set(dailyCols.map((c) => c.name));

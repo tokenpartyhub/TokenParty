@@ -1,6 +1,6 @@
 import { getConfig } from "../config.js";
 import type { Provider, Token, ModelConfig, AliasEntry } from "../types/config.js";
-import { getModelId, getModelPricing, getModelPriority, getAliasEntryId, getAliasEntryPriority } from "../types/config.js";
+import { getModelId, getModelPricing, getModelPriority, getAliasEntryId } from "../types/config.js";
 
 export interface RouteResult {
   provider: Provider;

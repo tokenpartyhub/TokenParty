@@ -31,6 +31,9 @@ export interface RequestRecord {
   // (latency_ms also includes stream drain time, which is "duration",
   // not latency).
   ttftMs?: number;
+  // Real model ID when the request was routed via an alias. Empty for
+  // direct model requests. Lets the dashboard show "alias → real model".
+  resolvedModel?: string;
 }
 
 export function calculateCost(
@@ -68,14 +71,15 @@ export function recordRequest(record: RequestRecord) {
   const startedAt = record.startTime ?? Date.now();
 
   db.prepare(`
-    INSERT OR REPLACE INTO request_index (id, timestamp, token_id, provider_id, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, latency_ms, ttft_ms, status, log_file, error, api_key_index, cost, agent, custom_tags, route_trace)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT OR REPLACE INTO request_index (id, timestamp, token_id, provider_id, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, latency_ms, ttft_ms, status, log_file, error, api_key_index, cost, agent, custom_tags, route_trace, resolved_model)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     record.id, startedAt, record.tokenId, record.providerId, record.model,
     record.inputTokens, record.outputTokens, cacheReadTokens, cacheWriteTokens, record.latencyMs,
     record.ttftMs ?? 0,
     record.status, record.logFile, record.error ?? null, record.apiKeyIndex ?? 0, cost, agent, customTags,
-    record.routeTrace ? JSON.stringify(record.routeTrace) : ""
+    record.routeTrace ? JSON.stringify(record.routeTrace) : "",
+    record.resolvedModel ?? ""
   );
 
   db.prepare(`
