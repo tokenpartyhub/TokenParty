@@ -4,13 +4,20 @@ All notable changes to TokenParty are documented here.
 
 ## [Unreleased]
 
+## [0.0.34] - 2026-07-16
+
 ### Added
-- Alias rename UI: click an alias name in **Providers → Model Aliases** to
-  rename it inline (Enter / blur to save, Escape to cancel). The server
-  rejects rename collisions with another existing alias.
+- Model aliases (a.k.a. pools): pin a stable name (e.g.
+  `minimax-latest`) to a list of real model IDs. The router rewrites
+  `body.model` to the real upstream id per attempt and records
+  `resolved_model` in `request_index` for audit. Array position in the
+  pool is the priority — earlier entries win.
+- Alias rename UI: click an alias name in **Providers → Model Aliases**
+  to rename it inline (Enter / blur to save, Escape to cancel). The
+  server rejects rename collisions with another existing alias.
 - Alias pool ghost detection: each pool entry that no enabled provider
-  serves is now tinted amber with a `ghost` badge, and a top-level banner
-  lists affected aliases. Pool edits drop dead entries on save.
+  serves is now tinted amber with a `ghost` badge, and a top-level
+  banner lists affected aliases. Pool edits drop dead entries on save.
 - Provider delete accepts `?cascade=aliases` to strip pool entries that
   reference the deleted provider's models in one shot; affected aliases
   are reported via the response so the dashboard can confirm.
@@ -30,6 +37,8 @@ All notable changes to TokenParty are documented here.
   that already appear in *some other* pool — a single model can now sit
   in multiple alias pools (e.g. `gpt-5` in both `performance` and
   `daily`). Duplicate detection within a single pool is preserved.
+- Removed dead `getAliasEntryPriority` helper — array position is the
+  only priority signal the router honours.
 
 ## [0.0.33] - 2026-07-15
 
