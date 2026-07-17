@@ -40,7 +40,12 @@ export default function Users() {
   const save = async () => {
     if (!editing) return;
     if (isNew) {
-      await api.createKey(editing);
+      const created = await api.createKey(editing) as { key: string; name: string };
+      // Server returns the full key once on creation. Show it inline so
+      // the admin can copy it before the list view (which masks) is
+      // reloaded. After this point the only way to recover the key is
+      // config.yaml.
+      alert(`User token created. Copy now — it will not be shown again:\n\n${created.key}`);
     } else {
       await api.updateKey(editing.key!, editing);
     }
@@ -87,7 +92,7 @@ export default function Users() {
               return (
                 <tr key={k.key} className="border-t">
                   <td className="px-4 py-2 font-medium">{k.name}</td>
-                  <td className="px-4 py-2 font-mono text-xs">{k.key}</td>
+                  <td className="px-4 py-2 font-mono text-xs text-gray-600" title="Full key is shown once at creation. Re-check config.yaml to recover.">{k.key}</td>
                   <td className="px-4 py-2 text-xs">
                     {k.allowedProviders.includes("*")
                       ? <span className="px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded">All</span>
