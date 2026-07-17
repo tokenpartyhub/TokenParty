@@ -24,15 +24,18 @@ export default function Login() {
     setSwitchingToken(t);
     setLoading(true);
     try {
-      const result = await api.verifyToken(t);
-      if (result.valid && result.role) {
-        setAuth(t, result.role as "admin" | "user", result.name);
-        navigate(result.role === "admin" ? "/admin" : "/");
-      } else {
+      // Two-step: /auth/verify confirms the token is valid without
+      // disclosing its role or label; /me then resolves identity.
+      const probe = await api.verifyToken(t);
+      if (!probe.valid) {
         setError("Token expired or invalid");
         removeAccount(t);
         setAccounts(getSavedAccounts());
+        return;
       }
+      const me = await api.getMe(t);
+      setAuth(t, me.role, me.name);
+      navigate(me.role === "admin" ? "/admin" : "/");
     } catch {
       setError("Verification failed");
     } finally {

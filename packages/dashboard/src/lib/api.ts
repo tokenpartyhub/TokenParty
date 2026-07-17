@@ -192,10 +192,21 @@ export const api = {
   getUserModels: () => request<{ id: string; protocols: string[] }[]>("/user/models"),
 
   // --- Auth ---
+  // /auth/verify is a public probe — returns only { valid: boolean } so an
+  // unauthenticated caller can't enumerate which tokens exist or learn the
+  // label of any token. Identity (role + name) is fetched separately via
+  // /me after the token is confirmed valid.
   verifyToken: (token: string) =>
     fetch(`${BASE}/auth/verify`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ token }),
-    }).then((r) => r.json() as Promise<{ valid: boolean; role?: string; name?: string }>),
+    }).then((r) => r.json() as Promise<{ valid: boolean }>),
+  // Authenticated identity lookup. Pass the bearer token directly so the
+  // call works whether or not it's already wired into the default
+  // Authorization header (Login flow runs before setAuth).
+  getMe: (token: string) =>
+    fetch(`${BASE}/me`, { headers: { Authorization: `Bearer ${token}` } }).then(
+      (r) => r.json() as Promise<{ role: "admin" | "user"; name: string }>,
+    ),
 };

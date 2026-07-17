@@ -27,27 +27,55 @@ function validateProvider(provider: any): string | null {
 
 // --- Auth ---
 
+// Public token probe endpoint. Returns ONLY { valid: boolean } — no role
+// or name — so an unauthenticated caller can't enumerate which tokens
+// exist or learn the human-readable label of any token. The dashboard
+// uses /auth/verify just to gate login; once logged in, it relies on the
+// admin auth middleware for any actual data fetch.
 apiRoutes.post("/auth/verify", async (c) => {
-  const { token } = await c.req.json<{ token: string }>();
-  if (validateAdminToken(token)) {
-    return c.json({ valid: true, role: "admin" });
+  try {
+    const body = await c.req.json<{ token?: unknown }>();
+    if (typeof body?.token !== "string" || body.token.length === 0 || body.token.length > 256) {
+      return c.json({ valid: false });
+    }
+    if (validateAdminToken(body.token)) return c.json({ valid: true });
+    const config = getConfig();
+    const userToken = config.tokens.find((t) => t.key === body.token && t.enabled);
+    return c.json({ valid: !!userToken });
+  } catch {
+    // Malformed body, oversized payload, etc. — never reveal anything.
+    return c.json({ valid: false });
   }
-  const config = getConfig();
-  const userToken = config.tokens.find((t) => t.key === token && t.enabled);
-  if (userToken) {
-    return c.json({ valid: true, role: "user", name: userToken.name });
-  }
-  return c.json({ valid: false });
 });
 
 apiRoutes.use("/*", async (c, next) => {
-  if (c.req.path === "/api/auth/verify") return next();
+  // /auth/verify is a public probe (no role disclosure); /me does its own
+  // per-request auth so it can serve either admin or user tokens without
+  // requiring the admin middleware.
+  if (c.req.path === "/api/auth/verify" || c.req.path === "/api/me") return next();
   const auth = c.req.header("authorization");
   const token = auth?.startsWith("Bearer ") ? auth.slice(7) : undefined;
   if (!token || !validateAdminToken(token)) {
     return c.json({ error: "Unauthorized" }, 401);
   }
   return next();
+});
+
+// Returns identity info for an already-authenticated bearer token. Used
+// by the dashboard's Login flow after /auth/verify confirms the token is
+// valid — separates "is this token valid?" (cheap public probe) from
+// "what role and label does this token have?" (authenticated lookup).
+apiRoutes.get("/me", (c) => {
+  const auth = c.req.header("authorization");
+  const token = auth?.startsWith("Bearer ") ? auth.slice(7) : undefined;
+  if (!token) return c.json({ error: "Unauthorized" }, 401);
+  if (validateAdminToken(token)) {
+    return c.json({ role: "admin", name: "Admin" });
+  }
+  const config = getConfig();
+  const userToken = config.tokens.find((t) => t.key === token && t.enabled);
+  if (userToken) return c.json({ role: "user", name: userToken.name });
+  return c.json({ error: "Unauthorized" }, 401);
 });
 
 // --- Version ---
@@ -324,9 +352,22 @@ apiRoutes.post("/providers/:id/detect-models", async (c) => {
 
 // --- Tokens (Keys) ---
 
+// Mask a token key for list-view display. Never returns the full key from
+// list endpoints — the admin copies the value once from the POST /keys
+// response and after that only sees a masked prefix/last-4. This keeps
+// the dashboard from being a token-leak surface (shoulder-surfing,
+// screen-share, browser history).
+function maskTokenKey(key: string): string {
+  if (key.length <= 8) return "****";
+  return `${key.slice(0, 4)}****${key.slice(-4)}`;
+}
+
 apiRoutes.get("/keys", (c) => {
   const config = getConfig();
-  return c.json(config.tokens);
+  // Mask at the source so the unmasked value never crosses the wire on a
+  // list fetch. POST /keys still returns the full value once so the admin
+  // can copy it on creation.
+  return c.json(config.tokens.map((t) => ({ ...t, key: maskTokenKey(t.key) })));
 });
 
 apiRoutes.get("/keys/usage-summary", (c) => {
