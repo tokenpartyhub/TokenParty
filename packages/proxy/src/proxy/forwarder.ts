@@ -183,7 +183,24 @@ export async function forwardRequest(
     // the alias name stays in `model` for logging.
     const realModelId = options?.realModelIds?.get(provider.id);
     const pricingModelId = realModelId ?? model;
-    const providerPricing = getModelPricing(provider.models.find((m) => getModelId(m) === pricingModelId)!);
+    // Skip candidates that don't actually serve this model. Without this
+    // guard, a router mistake (or stale alias pool referencing a removed
+    // model) would have us hit upstream with a body.model the provider
+    // doesn't recognise, get a 400, and fall through to the next
+    // candidate — wasting a round-trip per mismatch. With it, we record
+    // a route_trace entry and move on instantly.
+    const providerModel = provider.models.find((m) => getModelId(m) === pricingModelId);
+    if (!providerModel) {
+      routeTrace.push({
+        provider: provider.id,
+        status: 0,
+        latencyMs: 0,
+        reason: "model_not_offered",
+        errorBody: { error: `provider does not serve model '${pricingModelId}'` },
+      });
+      continue;
+    }
+    const providerPricing = getModelPricing(providerModel);
     const { key: selectedKey, index: apiKeyIndex } = selectApiKey(provider);
     const upstreamHeaders = buildTargetHeaders(provider, selectedKey, c.req.raw.headers);
     // Bridge a Responses entry to Chat Completions when the provider asks for
