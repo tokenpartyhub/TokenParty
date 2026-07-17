@@ -4,6 +4,34 @@ All notable changes to TokenParty are documented here.
 
 ## [Unreleased]
 
+## [0.0.35] - 2026-07-17
+
+### Security
+- `/api/auth/verify` no longer discloses role or token label — returns
+  only `{ valid: boolean }`. Previously an unauthenticated caller could
+  probe whether a specific token was valid AND learn the human-readable
+  label of any user token. Identity (role + name) is now fetched via a
+  separate authenticated `/api/me` endpoint that does its own per-
+  request auth (handles both admin and user tokens).
+- API keys in `GET /keys` responses are now masked (`prefix****last4`)
+  for keys longer than 8 chars. The full key is returned exactly once
+  on `POST /keys` so the admin can copy it on creation; after that the
+  dashboard only ever displays the masked form. The only way to recover
+  a forgotten key is `~/.tokenparty/config.yaml`. The dashboard's Keys
+  and Users pages were updated to render the masked key with a tooltip
+  pointing at the recovery path.
+
+### Fixed
+- Forwarder no longer crashes with a 500 when a fallback candidate
+  doesn't serve the requested model. Previously, a router/provider
+  drift (e.g. stale alias pool referencing a removed model) would have
+  the forwarder call `provider.models.find(...)!` with a non-null
+  assertion and then throw inside `getModelPricing(undefined)`. The
+  loop now safely skips such candidates with a `route_trace` entry
+  (`reason: "model_not_offered"`) instead of issuing a doomed upstream
+  request. Saves one network round-trip per mismatched candidate in
+  the fallback chain.
+
 ## [0.0.34] - 2026-07-16
 
 ### Added
